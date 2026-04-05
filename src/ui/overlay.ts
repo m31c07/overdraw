@@ -57,29 +57,29 @@ export function createOverlay(library: LibraryItem[]): OverlayController {
       <input class="hidden-file-input" id="start-file-input" type="file" accept="image/png,image/jpeg" />
       <section class="panel" id="home-panel">
         <h1>Overdraw</h1>
-        <p>Выберите картинку, при желании подготовьте контур, затем входите в AR.</p>
+        <p>Р’С‹Р±РµСЂРёС‚Рµ РєР°СЂС‚РёРЅРєСѓ, РїСЂРё Р¶РµР»Р°РЅРёРё РїРѕРґРіРѕС‚РѕРІСЊС‚Рµ РєРѕРЅС‚СѓСЂ, Р·Р°С‚РµРј РІС…РѕРґРёС‚Рµ РІ AR.</p>
         <div class="stack">
           <div class="start-preview" id="start-preview-wrap">
             <img class="start-preview-image" id="start-preview-image" alt="Selected image preview" />
           </div>
-          <button class="btn" id="choose-start-image" type="button">Выбрать картинку</button>
-          <button class="btn" id="toggle-image-editor" type="button">Подготовить контур</button>
+          <button class="btn" id="choose-start-image" type="button">Р’С‹Р±СЂР°С‚СЊ РєР°СЂС‚РёРЅРєСѓ</button>
+          <button class="btn" id="toggle-image-editor" type="button">РџРѕРґРіРѕС‚РѕРІРёС‚СЊ РєРѕРЅС‚СѓСЂ</button>
           <section class="image-editor" id="image-editor">
             <div class="image-editor-preview">
               <img class="start-preview-image" id="image-editor-preview-image" alt="Outline preview" />
             </div>
             <div class="slider-row">
-              <label for="outline-threshold">Прозрачность фона</label>
+              <label for="outline-threshold">РџСЂРѕР·СЂР°С‡РЅРѕСЃС‚СЊ С„РѕРЅР°</label>
               <input id="outline-threshold" type="range" min="0" max="100" step="1" value="72" />
               <span class="hint" id="outline-threshold-value">72%</span>
             </div>
             <div class="slider-row">
-              <label for="outline-color">Цвет контура</label>
+              <label for="outline-color">Р¦РІРµС‚ РєРѕРЅС‚СѓСЂР°</label>
               <input id="outline-color" type="range" min="0" max="255" step="1" value="0" />
               <span class="hint" id="outline-color-value">0</span>
             </div>
             <div class="slider-row">
-              <label for="preview-background-hue">Цвет тестового фона</label>
+              <label for="preview-background-hue">Р¦РІРµС‚ С‚РµСЃС‚РѕРІРѕРіРѕ С„РѕРЅР°</label>
               <input id="preview-background-hue" type="range" min="0" max="255" step="1" value="3" />
               <span class="hint" id="preview-background-hue-value">3</span>
             </div>
@@ -88,7 +88,7 @@ export function createOverlay(library: LibraryItem[]): OverlayController {
             <button class="btn btn-primary" id="enter-ar">Enter AR</button>
             <button class="btn" id="reset-home">Reset scene</button>
           </div>
-          <button class="btn btn-primary return-ar-btn" id="return-ar">Вернуться в AR</button>
+          <button class="btn btn-primary return-ar-btn" id="return-ar">Р’РµСЂРЅСѓС‚СЊСЃСЏ РІ AR</button>
           <p class="hint" id="support-label"></p>
         </div>
       </section>
@@ -107,6 +107,7 @@ export function createOverlay(library: LibraryItem[]): OverlayController {
     </div>
   `;
 
+  const shell = document.querySelector<HTMLElement>(".shell");
   const canvasHost = document.querySelector<HTMLElement>("#canvas-host");
   const homePanel = document.querySelector<HTMLElement>("#home-panel");
   const overlay = document.querySelector<HTMLElement>("#xr-overlay");
@@ -135,6 +136,7 @@ export function createOverlay(library: LibraryItem[]): OverlayController {
   const presetButtons = Array.from(document.querySelectorAll<HTMLButtonElement>("[data-preset-id]"));
 
   if (
+    !shell ||
     !canvasHost ||
     !homePanel ||
     !overlay ||
@@ -192,10 +194,10 @@ export function createOverlay(library: LibraryItem[]): OverlayController {
       ? "Quest Browser with HTTPS should support immersive-ar hit test."
       : "immersive-ar is not reported as supported in this browser.";
     enterArButton.disabled = !state.arSupported;
-    chooseStartImageButton.textContent = state.hasStartImage ? "Картинка выбрана" : "Выбрать картинку";
+    chooseStartImageButton.textContent = state.hasStartImage ? "РљР°СЂС‚РёРЅРєР° РІС‹Р±СЂР°РЅР°" : "Р’С‹Р±СЂР°С‚СЊ РєР°СЂС‚РёРЅРєСѓ";
     toggleImageEditorButton.disabled = !state.hasStartImage;
     toggleImageEditorButton.style.display = state.hasStartImage ? "block" : "none";
-    toggleImageEditorButton.textContent = state.imageEditorOpen ? "Скрыть редактор" : "Подготовить контур";
+    toggleImageEditorButton.textContent = state.imageEditorOpen ? "РЎРєСЂС‹С‚СЊ СЂРµРґР°РєС‚РѕСЂ" : "РџРѕРґРіРѕС‚РѕРІРёС‚СЊ РєРѕРЅС‚СѓСЂ";
     startPreviewWrap.style.display = state.startImagePreviewUrl ? "block" : "none";
     startPreviewImage.src = state.startImagePreviewUrl;
     imageEditor.style.display = state.hasStartImage && state.imageEditorOpen ? "grid" : "none";
@@ -229,7 +231,7 @@ export function createOverlay(library: LibraryItem[]): OverlayController {
   sync();
 
   return {
-    root: overlay,
+    root: shell,
     canvasHost,
     onEnterAr(callback) {
       enterArButton.addEventListener("click", callback);

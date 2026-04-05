@@ -707,27 +707,13 @@ async function bootstrap(): Promise<void> {
       return;
     }
 
-    const inverseReset = new THREE.Matrix4().fromArray(resetEvent.transform.matrix).invert();
     endDrag();
     previewPlacementHit = null;
-
-    for (const artwork of store.objects) {
-      artwork.root.applyMatrix4(inverseReset);
-      markAnchorDirty(artwork);
-    }
-
-    if (previewArtwork) {
-      previewArtwork.root.applyMatrix4(inverseReset);
-    }
-
     updateVisualState();
   };
 
   const updateOverlayState = () => {
-    const prompt =
-      previewArtwork || creationHold.active
-        ? ""
-        : "";
+    const prompt = "";
 
     let status = "drawing";
     if (mode === "editing") {
@@ -1219,6 +1205,15 @@ async function bootstrap(): Promise<void> {
       return;
     }
 
+    const pointerRay = buildControllerRay(getPointerObject(controller));
+    const editingIntersection = mode === "editing" ? store.findIntersection(pointerRay, true) : null;
+    controllers.setRayLength(
+      controller,
+      editingIntersection
+        ? Math.max(0.02, editingIntersection.point.distanceTo(pointerRay.origin))
+        : 1.4
+    );
+
     if (controller.buttonB.pressed) {
       if (!exitHoldStartedAt) {
         exitHoldStartedAt = performance.now();
@@ -1268,14 +1263,13 @@ async function bootstrap(): Promise<void> {
       }
     } else if (mode === "editing") {
       if (!activeDrag) {
-        const hoverIntersection = store.findIntersection(buildControllerRay(getPointerObject(controller)), true);
         store.setHoveredHandle(
-          hoverIntersection && hoverIntersection.handle !== "body" ? hoverIntersection.handle : null
+          editingIntersection && editingIntersection.handle !== "body" ? editingIntersection.handle : null
         );
       }
 
       if (controller.trigger.justPressed) {
-        const intersection = store.findIntersection(buildControllerRay(getPointerObject(controller)), true);
+        const intersection = editingIntersection;
         if (intersection) {
           const wasSelected = store.selected === intersection.object;
           store.select(intersection.object, true);
@@ -1323,7 +1317,7 @@ async function bootstrap(): Promise<void> {
         if (activeDrag && activeDrag.controller === controller && activeDrag.mode !== "depth") {
           endDrag();
         } else {
-          const intersection = store.findIntersection(buildControllerRay(getPointerObject(controller)), true);
+          const intersection = editingIntersection;
           if (!intersection) {
             clearSelectionIfAllowed();
           } else if (!intersection.object.locked) {

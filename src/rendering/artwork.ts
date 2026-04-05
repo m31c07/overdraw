@@ -2,8 +2,9 @@ import * as THREE from "three";
 import { nanoid } from "./objectIds";
 
 const DEFAULT_MAX_SIDE = 0.42;
-const MIN_SIDE = 0.05;
-const MAX_SIDE = 2.5;
+const MIN_SIDE = 0.01;
+const MAX_SIDE = 2.0;
+const MIN_GIZMO_SIZE = 0.2;
 const DEFAULT_OPACITY = 0.68;
 
 const HANDLE_NAMES = {
@@ -68,6 +69,8 @@ export class ArtworkObject {
   private texture: THREE.Texture | null = null;
   private readonly size = new THREE.Vector2(1, 1);
   private readonly boxLine: THREE.LineSegments;
+  private readonly glassMesh: THREE.Mesh<THREE.PlaneGeometry, THREE.MeshBasicMaterial>;
+  private readonly projectionLines: THREE.LineSegments;
   private readonly handles = new Map<HandleName, THREE.Object3D>();
 
   constructor(options: CreateArtworkOptions = {}) {
@@ -81,7 +84,6 @@ export class ArtworkObject {
     this.mesh = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), material);
     this.mesh.name = HANDLE_NAMES.body;
     this.mesh.renderOrder = 10;
-
     this.content.add(this.mesh);
     this.root.add(this.content);
     this.root.add(this.selectionRoot);
@@ -99,6 +101,38 @@ export class ArtworkObject {
     );
     this.boxLine.renderOrder = 30;
     this.selectionRoot.add(this.boxLine);
+
+    this.glassMesh = new THREE.Mesh(
+      new THREE.PlaneGeometry(1, 1),
+      new THREE.MeshBasicMaterial({
+        color: 0xe9f2ff,
+        transparent: true,
+        opacity: 0.2,
+        depthTest: false,
+        depthWrite: false,
+        side: THREE.DoubleSide
+      })
+    );
+    this.glassMesh.name = HANDLE_NAMES.body;
+    this.glassMesh.renderOrder = 29;
+    this.glassMesh.visible = false;
+    this.selectionRoot.add(this.glassMesh);
+
+    this.projectionLines = new THREE.LineSegments(
+      new THREE.BufferGeometry(),
+      new THREE.LineDashedMaterial({
+        color: 0xffd36b,
+        transparent: true,
+        opacity: 0.85,
+        dashSize: 0.018,
+        gapSize: 0.012,
+        depthTest: false,
+        depthWrite: false
+      })
+    );
+    this.projectionLines.renderOrder = 28;
+    this.projectionLines.visible = false;
+    this.selectionRoot.add(this.projectionLines);
 
     this.createHandles();
     this.applyPosition(options.position ?? new THREE.Vector3(0, 1.35, -1));
@@ -127,7 +161,7 @@ export class ArtworkObject {
       this.raycastTargets.push(...raycastObjects);
     };
 
-    this.raycastTargets.push(this.mesh);
+    this.raycastTargets.push(this.mesh, this.glassMesh);
     add(HANDLE_NAMES.edgeXPos, new THREE.Mesh(edgeVerticalGeometry, createHandleMaterial(0xf66b6b)));
     add(HANDLE_NAMES.edgeXNeg, new THREE.Mesh(edgeVerticalGeometry, createHandleMaterial(0xf66b6b)));
     add(HANDLE_NAMES.edgeYPos, new THREE.Mesh(edgeGeometry, createHandleMaterial(0x65db7c)));
@@ -141,7 +175,7 @@ export class ArtworkObject {
     add(HANDLE_NAMES.twistNP, ...this.createTriangleHandle(HANDLE_NAMES.twistNP, 0x6ab7ff, -Math.PI * 0.5));
     add(HANDLE_NAMES.twistNN, ...this.createTriangleHandle(HANDLE_NAMES.twistNN, 0x6ab7ff, Math.PI));
 
-    this.layoutHandles();
+    this.update();
   }
 
   private createTriangleHandle(
@@ -168,28 +202,45 @@ export class ArtworkObject {
     return [group, [triangle]];
   }
 
-  private layoutHandles(): void {
-    const halfX = this.content.scale.x * 0.5;
-    const halfY = this.content.scale.y * 0.5;
+  update(): void {
+    const objectHalfX = this.content.scale.x * 0.5;
+    const objectHalfY = this.content.scale.y * 0.5;
+    const gizmoHalfX = Math.max(this.content.scale.x, MIN_GIZMO_SIZE) * 0.5;
+    const gizmoHalfY = Math.max(this.content.scale.y, MIN_GIZMO_SIZE) * 0.5;
     const handleZ = 0.002;
-    const innerOffsetX = Math.min(halfX * 0.45, 0.11);
-    const innerOffsetY = Math.min(halfY * 0.45, 0.11);
+    const innerOffsetX = Math.min(gizmoHalfX * 0.45, 0.11);
+    const innerOffsetY = Math.min(gizmoHalfY * 0.45, 0.11);
 
-    this.boxLine.scale.set(this.content.scale.x, this.content.scale.y, 1);
+    this.boxLine.scale.set(gizmoHalfX * 2, gizmoHalfY * 2, 1);
     this.selectionRoot.quaternion.copy(this.content.quaternion);
+    this.glassMesh.scale.set(gizmoHalfX * 2, gizmoHalfY * 2, 1);
+    this.glassMesh.position.set(0, 0, 0.001);
+    this.glassMesh.visible = this.content.scale.x < MIN_GIZMO_SIZE || this.content.scale.y < MIN_GIZMO_SIZE;
 
-    this.handles.get(HANDLE_NAMES.edgeXPos)?.position.set(halfX, 0, handleZ);
-    this.handles.get(HANDLE_NAMES.edgeXNeg)?.position.set(-halfX, 0, handleZ);
-    this.handles.get(HANDLE_NAMES.edgeYPos)?.position.set(0, halfY, handleZ);
-    this.handles.get(HANDLE_NAMES.edgeYNeg)?.position.set(0, -halfY, handleZ);
-    this.handles.get(HANDLE_NAMES.cornerPP)?.position.set(halfX, halfY, handleZ);
-    this.handles.get(HANDLE_NAMES.cornerPN)?.position.set(halfX, -halfY, handleZ);
-    this.handles.get(HANDLE_NAMES.cornerNP)?.position.set(-halfX, halfY, handleZ);
-    this.handles.get(HANDLE_NAMES.cornerNN)?.position.set(-halfX, -halfY, handleZ);
-    this.handles.get(HANDLE_NAMES.twistPP)?.position.set(halfX - innerOffsetX, halfY - innerOffsetY, handleZ);
-    this.handles.get(HANDLE_NAMES.twistPN)?.position.set(halfX - innerOffsetX, -halfY + innerOffsetY, handleZ);
-    this.handles.get(HANDLE_NAMES.twistNP)?.position.set(-halfX + innerOffsetX, halfY - innerOffsetY, handleZ);
-    this.handles.get(HANDLE_NAMES.twistNN)?.position.set(-halfX + innerOffsetX, -halfY + innerOffsetY, handleZ);
+    this.handles.get(HANDLE_NAMES.edgeXPos)?.position.set(gizmoHalfX, 0, handleZ);
+    this.handles.get(HANDLE_NAMES.edgeXNeg)?.position.set(-gizmoHalfX, 0, handleZ);
+    this.handles.get(HANDLE_NAMES.edgeYPos)?.position.set(0, gizmoHalfY, handleZ);
+    this.handles.get(HANDLE_NAMES.edgeYNeg)?.position.set(0, -gizmoHalfY, handleZ);
+    this.handles.get(HANDLE_NAMES.cornerPP)?.position.set(gizmoHalfX, gizmoHalfY, handleZ);
+    this.handles.get(HANDLE_NAMES.cornerPN)?.position.set(gizmoHalfX, -gizmoHalfY, handleZ);
+    this.handles.get(HANDLE_NAMES.cornerNP)?.position.set(-gizmoHalfX, gizmoHalfY, handleZ);
+    this.handles.get(HANDLE_NAMES.cornerNN)?.position.set(-gizmoHalfX, -gizmoHalfY, handleZ);
+    this.handles.get(HANDLE_NAMES.twistPP)?.position.set(gizmoHalfX - innerOffsetX, gizmoHalfY - innerOffsetY, handleZ);
+    this.handles.get(HANDLE_NAMES.twistPN)?.position.set(gizmoHalfX - innerOffsetX, -gizmoHalfY + innerOffsetY, handleZ);
+    this.handles.get(HANDLE_NAMES.twistNP)?.position.set(-gizmoHalfX + innerOffsetX, gizmoHalfY - innerOffsetY, handleZ);
+    this.handles.get(HANDLE_NAMES.twistNN)?.position.set(-gizmoHalfX + innerOffsetX, -gizmoHalfY + innerOffsetY, handleZ);
+
+    const projectionVertices = new Float32Array([
+      gizmoHalfX, gizmoHalfY, 0.0005, objectHalfX, objectHalfY, 0.0005,
+      gizmoHalfX, -gizmoHalfY, 0.0005, objectHalfX, -objectHalfY, 0.0005,
+      -gizmoHalfX, gizmoHalfY, 0.0005, -objectHalfX, objectHalfY, 0.0005,
+      -gizmoHalfX, -gizmoHalfY, 0.0005, -objectHalfX, -objectHalfY, 0.0005
+    ]);
+    this.projectionLines.geometry.dispose();
+    this.projectionLines.geometry = new THREE.BufferGeometry();
+    this.projectionLines.geometry.setAttribute("position", new THREE.BufferAttribute(projectionVertices, 3));
+    this.projectionLines.computeLineDistances();
+    this.projectionLines.visible = this.glassMesh.visible;
   }
 
   private applyPlaceholderLook(): void {
@@ -258,21 +309,21 @@ export class ArtworkObject {
       this.content.scale.set(clamped * aspect, clamped, 1);
     }
 
-    this.layoutHandles();
+    this.update();
   }
 
   scaleLocal(deltaWidth: number, deltaHeight: number): void {
     const nextWidth = THREE.MathUtils.clamp(this.width + deltaWidth, MIN_SIDE, MAX_SIDE);
     const nextHeight = THREE.MathUtils.clamp(this.height + deltaHeight, MIN_SIDE, MAX_SIDE);
     this.content.scale.set(nextWidth, nextHeight, 1);
-    this.layoutHandles();
+    this.update();
   }
 
   scaleUniform(factor: number): void {
     const nextWidth = THREE.MathUtils.clamp(this.width * factor, MIN_SIDE, MAX_SIDE);
     const nextHeight = THREE.MathUtils.clamp(this.height * factor, MIN_SIDE, MAX_SIDE);
     this.content.scale.set(nextWidth, nextHeight, 1);
-    this.layoutHandles();
+    this.update();
   }
 
   setLocalSize(width: number, height: number): void {
@@ -281,18 +332,18 @@ export class ArtworkObject {
       THREE.MathUtils.clamp(height, MIN_SIDE, MAX_SIDE),
       1
     );
-    this.layoutHandles();
+    this.update();
   }
 
   rotateOnSurface(radians: number): void {
     const axis = new THREE.Vector3(0, 0, 1);
     this.content.quaternion.multiply(new THREE.Quaternion().setFromAxisAngle(axis, radians));
-    this.layoutHandles();
+    this.update();
   }
 
   setContentQuaternion(quaternion: THREE.Quaternion): void {
     this.content.quaternion.copy(quaternion);
-    this.layoutHandles();
+    this.update();
   }
 
   setDisplayOpacity(opacity: number): void {
@@ -319,7 +370,7 @@ export class ArtworkObject {
   }
 
   matchesTarget(target: THREE.Object3D): HandleName | null {
-    if (target === this.mesh) {
+    if (target === this.mesh || target === this.glassMesh) {
       return HANDLE_NAMES.body;
     }
 
@@ -341,6 +392,10 @@ export class ArtworkObject {
     disposeTexture(this.texture);
     this.mesh.material.dispose();
     this.mesh.geometry.dispose();
+    this.glassMesh.material.dispose();
+    this.glassMesh.geometry.dispose();
+    this.projectionLines.geometry.dispose();
+    (this.projectionLines.material as THREE.Material).dispose();
     this.boxLine.geometry.dispose();
     (this.boxLine.material as THREE.Material).dispose();
 
