@@ -1,4 +1,4 @@
-import basicSsl from "@vitejs/plugin-basic-ssl";
+﻿import basicSsl from "@vitejs/plugin-basic-ssl";
 import fs from "node:fs";
 import path from "node:path";
 import { defineConfig } from "vite";
@@ -18,6 +18,7 @@ function resolveHttpsConfig() {
 }
 
 export default defineConfig({
+  base: "/overdraw/",
   plugins: [basicSsl()],
   server: {
     host: "0.0.0.0",
