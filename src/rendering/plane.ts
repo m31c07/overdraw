@@ -5,7 +5,7 @@ export interface PlanePose {
   normal: THREE.Vector3;
 }
 
-export class StencilPlane {
+export class ArtworkPlane {
   readonly mesh: THREE.Mesh<THREE.PlaneGeometry, THREE.MeshBasicMaterial>;
   readonly group: THREE.Group;
   readonly textureLoader = new THREE.TextureLoader();

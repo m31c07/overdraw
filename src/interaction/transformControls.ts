@@ -1,21 +1,21 @@
 import * as THREE from "three";
 import type { ControllerState } from "../xr/controllerInput";
 import { buildControllerRay } from "../xr/session";
-import type { StencilPlane } from "../rendering/plane";
+import type { ArtworkPlane } from "../rendering/plane";
 
 const DEAD_ZONE = 0.18;
 const SCALE_SPEED = 0.9;
 const ROTATE_SPEED = 1.4;
 
 export class SurfaceTransformController {
-  private readonly plane: StencilPlane;
+  private readonly plane: ArtworkPlane;
   private dragging = false;
   private dragOffset = new THREE.Vector3();
   private activeController: ControllerState | null = null;
   private readonly movementPlane = new THREE.Plane();
   private readonly hitPoint = new THREE.Vector3();
 
-  constructor(plane: StencilPlane) {
+  constructor(plane: ArtworkPlane) {
     this.plane = plane;
   }
 

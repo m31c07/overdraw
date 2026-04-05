@@ -1,5 +1,5 @@
 import type { SurfaceHit } from "../xr/hitTest";
-import { makeQuaternionFromNormal, type StencilPlane } from "../rendering/plane";
+import { makeQuaternionFromNormal, type ArtworkPlane } from "../rendering/plane";
 
 export type PlacementStatus = "idle" | "aim at surface" | "placed" | "locked";
 
@@ -11,7 +11,7 @@ export interface PlacementState {
 }
 
 export class PlacementController {
-  private readonly plane: StencilPlane;
+  private readonly plane: ArtworkPlane;
   readonly state: PlacementState = {
     status: "idle",
     locked: false,
@@ -19,7 +19,7 @@ export class PlacementController {
     lastHit: null
   };
 
-  constructor(plane: StencilPlane) {
+  constructor(plane: ArtworkPlane) {
     this.plane = plane;
   }
 

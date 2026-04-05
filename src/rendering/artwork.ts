@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import { nanoid } from "./stencilIds";
+import { nanoid } from "./objectIds";
 
 const DEFAULT_MAX_SIDE = 0.42;
 const MIN_SIDE = 0.05;
@@ -16,20 +16,21 @@ const HANDLE_NAMES = {
   cornerPN: "corner-pn",
   cornerNP: "corner-np",
   cornerNN: "corner-nn",
-  rotateVertical: "rotate-vertical",
-  rotateHorizontal: "rotate-horizontal",
-  rotateDepth: "rotate-depth"
+  twistPP: "twist-pp",
+  twistPN: "twist-pn",
+  twistNP: "twist-np",
+  twistNN: "twist-nn"
 } as const;
 
 export type HandleName = (typeof HANDLE_NAMES)[keyof typeof HANDLE_NAMES];
 
 export interface HandleIntersection {
-  object: StencilObject;
+  object: ArtworkObject;
   handle: HandleName;
   point: THREE.Vector3;
 }
 
-export interface CreateStencilOptions {
+export interface CreateArtworkOptions {
   position?: THREE.Vector3;
   quaternion?: THREE.Quaternion;
   texture?: THREE.Texture | null;
@@ -54,7 +55,7 @@ function disposeTexture(texture: THREE.Texture | null): void {
   texture.dispose();
 }
 
-export class StencilObject {
+export class ArtworkObject {
   readonly id = nanoid();
   readonly root = new THREE.Group();
   readonly content = new THREE.Group();
@@ -69,7 +70,7 @@ export class StencilObject {
   private readonly boxLine: THREE.LineSegments;
   private readonly handles = new Map<HandleName, THREE.Object3D>();
 
-  constructor(options: CreateStencilOptions = {}) {
+  constructor(options: CreateArtworkOptions = {}) {
     const material = new THREE.MeshBasicMaterial({
       color: 0xffffff,
       transparent: true,
@@ -114,8 +115,8 @@ export class StencilObject {
   }
 
   private createHandles(): void {
-    const edgeGeometry = new THREE.BoxGeometry(0.16, 0.05, 0.005);
-    const edgeVerticalGeometry = new THREE.BoxGeometry(0.05, 0.16, 0.005);
+    const edgeGeometry = new THREE.BoxGeometry(0.18, 0.05, 0.005);
+    const edgeVerticalGeometry = new THREE.BoxGeometry(0.05, 0.18, 0.005);
     const cornerGeometry = new THREE.BoxGeometry(0.08, 0.08, 0.005);
 
     const add = (name: HandleName, object: THREE.Object3D, raycastObjects: THREE.Object3D[] = [object]) => {
@@ -127,67 +128,52 @@ export class StencilObject {
     };
 
     this.raycastTargets.push(this.mesh);
-    add(HANDLE_NAMES.edgeXPos, new THREE.Mesh(edgeVerticalGeometry, createHandleMaterial(0x5dc1ff)));
-    add(HANDLE_NAMES.edgeXNeg, new THREE.Mesh(edgeVerticalGeometry, createHandleMaterial(0x5dc1ff)));
-    add(HANDLE_NAMES.edgeYPos, new THREE.Mesh(edgeGeometry, createHandleMaterial(0x5dc1ff)));
-    add(HANDLE_NAMES.edgeYNeg, new THREE.Mesh(edgeGeometry, createHandleMaterial(0x5dc1ff)));
+    add(HANDLE_NAMES.edgeXPos, new THREE.Mesh(edgeVerticalGeometry, createHandleMaterial(0xf66b6b)));
+    add(HANDLE_NAMES.edgeXNeg, new THREE.Mesh(edgeVerticalGeometry, createHandleMaterial(0xf66b6b)));
+    add(HANDLE_NAMES.edgeYPos, new THREE.Mesh(edgeGeometry, createHandleMaterial(0x65db7c)));
+    add(HANDLE_NAMES.edgeYNeg, new THREE.Mesh(edgeGeometry, createHandleMaterial(0x65db7c)));
     add(HANDLE_NAMES.cornerPP, new THREE.Mesh(cornerGeometry, createHandleMaterial(0xffb36b)));
     add(HANDLE_NAMES.cornerPN, new THREE.Mesh(cornerGeometry, createHandleMaterial(0xffb36b)));
     add(HANDLE_NAMES.cornerNP, new THREE.Mesh(cornerGeometry, createHandleMaterial(0xffb36b)));
     add(HANDLE_NAMES.cornerNN, new THREE.Mesh(cornerGeometry, createHandleMaterial(0xffb36b)));
-    add(
-      HANDLE_NAMES.rotateVertical,
-      ...this.createArrowHandle(HANDLE_NAMES.rotateVertical, 0xf66b6b, "up")
-    );
-    add(
-      HANDLE_NAMES.rotateHorizontal,
-      ...this.createArrowHandle(HANDLE_NAMES.rotateHorizontal, 0x65db7c, "right")
-    );
-    add(
-      HANDLE_NAMES.rotateDepth,
-      ...this.createArrowHandle(HANDLE_NAMES.rotateDepth, 0x6ab7ff, "diag")
-    );
+    add(HANDLE_NAMES.twistPP, ...this.createTriangleHandle(HANDLE_NAMES.twistPP, 0x6ab7ff, 0));
+    add(HANDLE_NAMES.twistPN, ...this.createTriangleHandle(HANDLE_NAMES.twistPN, 0x6ab7ff, Math.PI * 0.5));
+    add(HANDLE_NAMES.twistNP, ...this.createTriangleHandle(HANDLE_NAMES.twistNP, 0x6ab7ff, -Math.PI * 0.5));
+    add(HANDLE_NAMES.twistNN, ...this.createTriangleHandle(HANDLE_NAMES.twistNN, 0x6ab7ff, Math.PI));
 
     this.layoutHandles();
   }
 
-  private createArrowHandle(
+  private createTriangleHandle(
     name: HandleName,
     color: number,
-    direction: "up" | "right" | "diag"
+    rotationZ: number
   ): [THREE.Group, THREE.Object3D[]] {
     const group = new THREE.Group();
-    const shaft = new THREE.Mesh(
-      new THREE.BoxGeometry(0.026, 0.1, 0.008),
+    const triangle = new THREE.Mesh(
+      new THREE.BufferGeometry(),
       createHandleMaterial(color)
     );
-    const arrow = new THREE.Mesh(
-      new THREE.ConeGeometry(0.022, 0.055, 12),
-      createHandleMaterial(color)
-    );
-    shaft.position.set(0, 0, 0.002);
-    arrow.position.set(0, 0.072, 0.002);
-
-    if (direction === "right") {
-      group.rotation.z = -Math.PI * 0.5;
-    } else if (direction === "diag") {
-      group.rotation.z = -Math.PI * 0.25;
-    }
-
-    shaft.name = name;
-    arrow.name = name;
-    shaft.userData.handleName = name;
-    arrow.userData.handleName = name;
-    group.add(shaft);
-    group.add(arrow);
-    return [group, [shaft, arrow]];
+    const vertices = new Float32Array([
+      -0.024, -0.018, 0.003,
+      0.024, -0.018, 0.003,
+      0, 0.024, 0.003
+    ]);
+    triangle.geometry.setAttribute("position", new THREE.BufferAttribute(vertices, 3));
+    triangle.geometry.computeVertexNormals();
+    triangle.name = name;
+    triangle.userData.handleName = name;
+    group.rotation.z = rotationZ;
+    group.add(triangle);
+    return [group, [triangle]];
   }
 
   private layoutHandles(): void {
     const halfX = this.content.scale.x * 0.5;
     const halfY = this.content.scale.y * 0.5;
     const handleZ = 0.002;
-    const rotateOffset = 0.15;
+    const innerOffsetX = Math.min(halfX * 0.45, 0.11);
+    const innerOffsetY = Math.min(halfY * 0.45, 0.11);
 
     this.boxLine.scale.set(this.content.scale.x, this.content.scale.y, 1);
     this.selectionRoot.quaternion.copy(this.content.quaternion);
@@ -200,11 +186,10 @@ export class StencilObject {
     this.handles.get(HANDLE_NAMES.cornerPN)?.position.set(halfX, -halfY, handleZ);
     this.handles.get(HANDLE_NAMES.cornerNP)?.position.set(-halfX, halfY, handleZ);
     this.handles.get(HANDLE_NAMES.cornerNN)?.position.set(-halfX, -halfY, handleZ);
-    this.handles.get(HANDLE_NAMES.rotateVertical)?.position.set(0, halfY + rotateOffset, handleZ);
-    this.handles.get(HANDLE_NAMES.rotateHorizontal)?.position.set(halfX + rotateOffset, 0, handleZ);
-    this.handles
-      .get(HANDLE_NAMES.rotateDepth)
-      ?.position.set(halfX + rotateOffset * 0.75, halfY + rotateOffset * 0.75, handleZ);
+    this.handles.get(HANDLE_NAMES.twistPP)?.position.set(halfX - innerOffsetX, halfY - innerOffsetY, handleZ);
+    this.handles.get(HANDLE_NAMES.twistPN)?.position.set(halfX - innerOffsetX, -halfY + innerOffsetY, handleZ);
+    this.handles.get(HANDLE_NAMES.twistNP)?.position.set(-halfX + innerOffsetX, halfY - innerOffsetY, handleZ);
+    this.handles.get(HANDLE_NAMES.twistNN)?.position.set(-halfX + innerOffsetX, -halfY + innerOffsetY, handleZ);
   }
 
   private applyPlaceholderLook(): void {
@@ -290,6 +275,15 @@ export class StencilObject {
     this.layoutHandles();
   }
 
+  setLocalSize(width: number, height: number): void {
+    this.content.scale.set(
+      THREE.MathUtils.clamp(width, MIN_SIDE, MAX_SIDE),
+      THREE.MathUtils.clamp(height, MIN_SIDE, MAX_SIDE),
+      1
+    );
+    this.layoutHandles();
+  }
+
   rotateOnSurface(radians: number): void {
     const axis = new THREE.Vector3(0, 0, 1);
     this.content.quaternion.multiply(new THREE.Quaternion().setFromAxisAngle(axis, radians));
@@ -358,28 +352,28 @@ export class StencilObject {
   }
 }
 
-export class StencilStore {
+export class ArtworkStore {
   private readonly scene: THREE.Scene;
   private readonly raycaster = new THREE.Raycaster();
   private readonly textureLoader = new THREE.TextureLoader();
-  readonly objects: StencilObject[] = [];
-  selected: StencilObject | null = null;
+  readonly objects: ArtworkObject[] = [];
+  selected: ArtworkObject | null = null;
 
   constructor(scene: THREE.Scene) {
     this.scene = scene;
     this.raycaster.layers.enableAll();
   }
 
-  create(options: CreateStencilOptions = {}): StencilObject {
-    const stencil = new StencilObject(options);
-    this.addExisting(stencil);
-    return stencil;
+  create(options: CreateArtworkOptions = {}): ArtworkObject {
+    const artwork = new ArtworkObject(options);
+    this.addExisting(artwork);
+    return artwork;
   }
 
-  addExisting(stencil: StencilObject): StencilObject {
-    this.objects.push(stencil);
-    this.scene.add(stencil.root);
-    return stencil;
+  addExisting(artwork: ArtworkObject): ArtworkObject {
+    this.objects.push(artwork);
+    this.scene.add(artwork.root);
+    return artwork;
   }
 
   removeSelected(): boolean {
@@ -398,32 +392,32 @@ export class StencilStore {
     return true;
   }
 
-  select(target: StencilObject | null, editing: boolean): void {
+  select(target: ArtworkObject | null, editing: boolean): void {
     this.selected = target && !target.locked ? target : null;
-    for (const stencil of this.objects) {
-      stencil.setEditingState(editing, stencil === this.selected);
+    for (const artwork of this.objects) {
+      artwork.setEditingState(editing, artwork === this.selected);
     }
   }
 
   setEditingVisuals(editing: boolean): void {
-    for (const stencil of this.objects) {
-      stencil.setEditingState(editing, editing && stencil === this.selected);
+    for (const artwork of this.objects) {
+      artwork.setEditingState(editing, editing && artwork === this.selected);
     }
   }
 
   setHoveredHandle(handle: HandleName | null): void {
-    for (const stencil of this.objects) {
-      stencil.setHoveredHandle(stencil === this.selected ? handle : null);
+    for (const artwork of this.objects) {
+      artwork.setHoveredHandle(artwork === this.selected ? handle : null);
     }
   }
 
   setGlobalOpacity(opacity: number): void {
-    for (const stencil of this.objects) {
-      stencil.setDisplayOpacity(opacity);
+    for (const artwork of this.objects) {
+      artwork.setDisplayOpacity(opacity);
     }
   }
 
-  async applyTextureFromFile(target: StencilObject, file: File): Promise<void> {
+  async applyTextureFromFile(target: ArtworkObject, file: File): Promise<void> {
     const objectUrl = URL.createObjectURL(file);
     try {
       const texture = await this.textureLoader.loadAsync(objectUrl);
@@ -433,7 +427,7 @@ export class StencilStore {
     }
   }
 
-  async applyTextureFromUrl(target: StencilObject, url: string): Promise<void> {
+  async applyTextureFromUrl(target: ArtworkObject, url: string): Promise<void> {
     const texture = await this.textureLoader.loadAsync(url);
     target.setTexture(texture);
   }

@@ -92,7 +92,7 @@ input {
   background: rgba(3, 7, 10, 0.9);
 }
 
-.stencil-editor {
+.image-editor {
   display: none;
   gap: 12px;
   padding: 14px;
@@ -101,7 +101,7 @@ input {
   background: rgba(255, 255, 255, 0.04);
 }
 
-.stencil-editor-preview {
+.image-editor-preview {
   overflow: hidden;
   border-radius: 14px;
   border: 1px solid rgba(255, 255, 255, 0.08);

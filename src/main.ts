@@ -2,7 +2,7 @@ import * as THREE from "three";
 import "./styles.css";
 import { createAppScene } from "./rendering/scene";
 import { SurfaceReticle } from "./rendering/reticle";
-import { StencilStore, StencilObject, type HandleName } from "./rendering/stencil";
+import { ArtworkStore, ArtworkObject, type HandleName } from "./rendering/artwork";
 import { createOverlay, type LibraryItem } from "./ui/overlay";
 import { createXRSessionController, buildControllerRay } from "./xr/session";
 import { XRHitTestManager } from "./xr/hitTest";
@@ -11,11 +11,11 @@ import type { SurfaceHit } from "./xr/hitTest";
 import { APP_CONFIG } from "./config/app";
 
 type AppMode = "drawing" | "editing";
-type DragMode = "move" | "scale-x" | "scale-y" | "scale-xy" | "rotate-axis" | "depth";
+type DragMode = "move" | "scale-corner" | "rotate-axis" | "depth";
 
 interface DragSession {
   mode: DragMode;
-  stencil: StencilObject;
+  artwork: ArtworkObject;
   controller: ControllerState;
   plane: THREE.Plane;
   rotationAxisLocal: THREE.Vector3 | null;
@@ -27,6 +27,8 @@ interface DragSession {
   startContentQuaternion: THREE.Quaternion;
   startGripPosition: THREE.Vector3;
   startPosition: THREE.Vector3;
+  startWidth: number;
+  startHeight: number;
   signX: number;
   signY: number;
 }
@@ -380,39 +382,38 @@ function handleToDragMode(
     case "body":
       return { mode: "move", signX: 0, signY: 0, axisLocal: null };
     case "edge-x-pos":
-      return { mode: "scale-x", signX: 1, signY: 0, axisLocal: null };
-    case "edge-x-neg":
-      return { mode: "scale-x", signX: -1, signY: 0, axisLocal: null };
-    case "edge-y-pos":
-      return { mode: "scale-y", signX: 0, signY: 1, axisLocal: null };
-    case "edge-y-neg":
-      return { mode: "scale-y", signX: 0, signY: -1, axisLocal: null };
-    case "corner-pp":
-      return { mode: "scale-xy", signX: 1, signY: 1, axisLocal: null };
-    case "corner-pn":
-      return { mode: "scale-xy", signX: 1, signY: -1, axisLocal: null };
-    case "corner-np":
-      return { mode: "scale-xy", signX: -1, signY: 1, axisLocal: null };
-    case "corner-nn":
-      return { mode: "scale-xy", signX: -1, signY: -1, axisLocal: null };
-    case "rotate-vertical":
       return { mode: "rotate-axis", signX: 0, signY: 0, axisLocal: new THREE.Vector3(0, 1, 0) };
-    case "rotate-horizontal":
+    case "edge-x-neg":
+      return { mode: "rotate-axis", signX: 0, signY: 0, axisLocal: new THREE.Vector3(0, 1, 0) };
+    case "edge-y-pos":
       return { mode: "rotate-axis", signX: 0, signY: 0, axisLocal: new THREE.Vector3(1, 0, 0) };
-    case "rotate-depth":
+    case "edge-y-neg":
+      return { mode: "rotate-axis", signX: 0, signY: 0, axisLocal: new THREE.Vector3(1, 0, 0) };
+    case "corner-pp":
+      return { mode: "scale-corner", signX: 1, signY: 1, axisLocal: null };
+    case "corner-pn":
+      return { mode: "scale-corner", signX: 1, signY: -1, axisLocal: null };
+    case "corner-np":
+      return { mode: "scale-corner", signX: -1, signY: 1, axisLocal: null };
+    case "corner-nn":
+      return { mode: "scale-corner", signX: -1, signY: -1, axisLocal: null };
+    case "twist-pp":
+    case "twist-pn":
+    case "twist-np":
+    case "twist-nn":
       return { mode: "rotate-axis", signX: 0, signY: 0, axisLocal: new THREE.Vector3(0, 0, 1) };
     default:
       return null;
   }
 }
 
-function worldPointToStencilLocal(
-  stencil: StencilObject,
+function worldPointToArtworkLocal(
+  artwork: ArtworkObject,
   worldPoint: THREE.Vector3,
   contentQuaternion: THREE.Quaternion
 ): THREE.Vector3 {
-  const pointInRoot = worldPoint.clone().sub(stencil.position);
-  pointInRoot.applyQuaternion(stencil.quaternion.clone().invert());
+  const pointInRoot = worldPoint.clone().sub(artwork.position);
+  pointInRoot.applyQuaternion(artwork.quaternion.clone().invert());
   pointInRoot.applyQuaternion(contentQuaternion.clone().invert());
   return pointInRoot;
 }
@@ -504,7 +505,7 @@ async function bootstrap(): Promise<void> {
   const libraryById = new Map(library.map((item) => [item.id, item]));
   const overlay = createOverlay(library);
   const appScene = createAppScene(overlay.canvasHost);
-  const store = new StencilStore(appScene.scene);
+  const store = new ArtworkStore(appScene.scene);
   const reticle = new SurfaceReticle();
   appScene.scene.add(reticle.mesh);
 
@@ -522,7 +523,7 @@ async function bootstrap(): Promise<void> {
   const holdTimer = createHoldTimerSprite();
   const editHint = createTextSprite(APP_CONFIG.ui.editModeHint);
   const exitHint = createTextSprite("Выходим");
-  let previewStencil: StencilObject | null = null;
+  let previewArtwork: ArtworkObject | null = null;
 
   let mode: AppMode = "drawing";
   let inSession = false;
@@ -546,31 +547,31 @@ async function bootstrap(): Promise<void> {
   holdTimer.sprite.visible = false;
   holdTimer.sprite.position.set(0.04, 0.06, 0.02);
 
-  const getAnchorState = (stencil: StencilObject): AnchorState => {
-    let state = anchorStates.get(stencil.id);
+  const getAnchorState = (artwork: ArtworkObject): AnchorState => {
+    let state = anchorStates.get(artwork.id);
     if (!state) {
       state = {
         binding: new AnchorBinding(),
         dirty: false,
         creating: false
       };
-      anchorStates.set(stencil.id, state);
+      anchorStates.set(artwork.id, state);
     }
     return state;
   };
 
-  const markAnchorDirty = (stencil: StencilObject) => {
-    getAnchorState(stencil).dirty = true;
+  const markAnchorDirty = (artwork: ArtworkObject) => {
+    getAnchorState(artwork).dirty = true;
   };
 
-  const clearAnchor = (stencil: StencilObject) => {
-    const state = anchorStates.get(stencil.id);
+  const clearAnchor = (artwork: ArtworkObject) => {
+    const state = anchorStates.get(artwork.id);
     if (!state) {
       return;
     }
 
     state.binding.clear();
-    anchorStates.delete(stencil.id);
+    anchorStates.delete(artwork.id);
   };
 
   const cancelCreationHold = () => {
@@ -601,22 +602,22 @@ async function bootstrap(): Promise<void> {
     holdTimer.update(progress);
   };
 
-  const ensurePreviewStencil = () => {
-    if (previewStencil) {
+  const ensurePreviewArtwork = () => {
+    if (previewArtwork) {
       return;
     }
 
-    previewStencil = new StencilObject();
-    previewStencil.applySize(APP_CONFIG.creation.previewScale);
-    previewStencil.setEditingState(false, false);
+    previewArtwork = new ArtworkObject();
+    previewArtwork.applySize(APP_CONFIG.creation.previewScale);
+    previewArtwork.setEditingState(false, false);
     if (startImageElement) {
-      previewStencil.setTexture(createTextureFromImage(startImageElement));
+      previewArtwork.setTexture(createTextureFromImage(startImageElement));
     }
-    appScene.scene.add(previewStencil.root);
+    appScene.scene.add(previewArtwork.root);
   };
 
-  const updatePreviewStencil = (controller: ControllerState, hit: SurfaceHit | null) => {
-    if (!previewStencil) {
+  const updatePreviewArtwork = (controller: ControllerState, hit: SurfaceHit | null) => {
+    if (!previewArtwork) {
       return;
     }
 
@@ -624,21 +625,21 @@ async function bootstrap(): Promise<void> {
     const ray = buildControllerRay(pointerObject);
 
     if (hit && hit.distance >= APP_CONFIG.interaction.minValidHitDistance) {
-      previewStencil.root.position.copy(hit.position);
-      previewStencil.root.quaternion.copy(
+      previewArtwork.root.position.copy(hit.position);
+      previewArtwork.root.quaternion.copy(
         makePreviewQuaternion(hit.normal, ray.direction)
       );
       return;
     }
 
-    previewStencil.root.position.copy(
+    previewArtwork.root.position.copy(
       ray.origin.add(
         ray.direction.clone().multiplyScalar(Math.abs(APP_CONFIG.creation.previewOffset.z))
       )
     );
-    previewStencil.root.position.x += APP_CONFIG.creation.previewOffset.x;
-    previewStencil.root.position.y += APP_CONFIG.creation.previewOffset.y;
-    previewStencil.root.quaternion.copy(
+    previewArtwork.root.position.x += APP_CONFIG.creation.previewOffset.x;
+    previewArtwork.root.position.y += APP_CONFIG.creation.previewOffset.y;
+    previewArtwork.root.quaternion.copy(
       makeQuaternionFromSurfaceAndRay(
         ray.direction.clone().multiplyScalar(-1),
         ray.direction
@@ -647,20 +648,20 @@ async function bootstrap(): Promise<void> {
   };
 
   const finalizePreviewPlacement = async (hit: SurfaceHit | null) => {
-    if (!previewStencil) {
+    if (!previewArtwork) {
       return;
     }
 
-    const worldQuaternion = previewStencil.root.getWorldQuaternion(new THREE.Quaternion());
-    previewStencil.root.removeFromParent();
+    const worldQuaternion = previewArtwork.root.getWorldQuaternion(new THREE.Quaternion());
+    previewArtwork.root.removeFromParent();
     if (hit) {
-      previewStencil.root.position.copy(hit.position);
+      previewArtwork.root.position.copy(hit.position);
     }
-    previewStencil.root.quaternion.copy(worldQuaternion);
-    store.addExisting(previewStencil);
-    store.select(previewStencil, true);
-    markAnchorDirty(previewStencil);
-    previewStencil = null;
+    previewArtwork.root.quaternion.copy(worldQuaternion);
+    store.addExisting(previewArtwork);
+    store.select(previewArtwork, true);
+    markAnchorDirty(previewArtwork);
+    previewArtwork = null;
     setMode("editing");
   };
 
@@ -669,31 +670,31 @@ async function bootstrap(): Promise<void> {
       return;
     }
 
-    for (const stencil of store.objects) {
-      const state = anchorStates.get(stencil.id);
-      const isActive = activeDrag?.stencil === stencil;
+    for (const artwork of store.objects) {
+      const state = anchorStates.get(artwork.id);
+      const isActive = activeDrag?.artwork === artwork;
       const isDirty = state?.dirty ?? false;
       if (!state || isActive || isDirty) {
         continue;
       }
 
-      state.binding.apply(frame, xrReferenceSpace, stencil.root);
+      state.binding.apply(frame, xrReferenceSpace, artwork.root);
     }
   };
 
-  const rebuildAnchorFromFrame = async (frame: XRFrame, stencil: StencilObject): Promise<void> => {
+  const rebuildAnchorFromFrame = async (frame: XRFrame, artwork: ArtworkObject): Promise<void> => {
     if (!xrSessionHandle || !xrReferenceSpace) {
       return;
     }
 
-    const state = getAnchorState(stencil);
+    const state = getAnchorState(artwork);
     if (state.creating) {
       return;
     }
 
     state.creating = true;
     try {
-      const anchored = await state.binding.createFromFrame(frame, xrReferenceSpace, xrSessionHandle, stencil.root);
+      const anchored = await state.binding.createFromFrame(frame, xrReferenceSpace, xrSessionHandle, artwork.root);
       state.dirty = !anchored;
     } finally {
       state.creating = false;
@@ -710,13 +711,13 @@ async function bootstrap(): Promise<void> {
     endDrag();
     previewPlacementHit = null;
 
-    for (const stencil of store.objects) {
-      stencil.root.applyMatrix4(inverseReset);
-      markAnchorDirty(stencil);
+    for (const artwork of store.objects) {
+      artwork.root.applyMatrix4(inverseReset);
+      markAnchorDirty(artwork);
     }
 
-    if (previewStencil) {
-      previewStencil.root.applyMatrix4(inverseReset);
+    if (previewArtwork) {
+      previewArtwork.root.applyMatrix4(inverseReset);
     }
 
     updateVisualState();
@@ -724,7 +725,7 @@ async function bootstrap(): Promise<void> {
 
   const updateOverlayState = () => {
     const prompt =
-      previewStencil || creationHold.active
+      previewArtwork || creationHold.active
         ? ""
         : "";
 
@@ -752,11 +753,11 @@ async function bootstrap(): Promise<void> {
 
   const updateVisualState = () => {
     controllers.setEditingVisible(
-      mode === "editing" || creationHold.active || Boolean(previewStencil) || exitHoldStartedAt > 0
+      mode === "editing" || creationHold.active || Boolean(previewArtwork) || exitHoldStartedAt > 0
     );
     store.setEditingVisuals(mode === "editing");
 
-    if (mode === "drawing" && !creationHold.active && !previewStencil) {
+    if (mode === "drawing" && !creationHold.active && !previewArtwork) {
       const controller = controllers.getPreferred();
       const triggerPressed = controller?.trigger.pressed ?? false;
       const gripPressed = controller?.gripButton.pressed ?? false;
@@ -787,19 +788,19 @@ async function bootstrap(): Promise<void> {
 
   const beginDrag = (
     controller: ControllerState,
-    stencil: StencilObject,
+    artwork: ArtworkObject,
     dragMode: DragMode,
     signX: number,
     signY: number,
     axisLocal: THREE.Vector3 | null
   ) => {
-    const startContentQuaternion = stencil.contentQuaternion.clone();
-    const rootQuaternion = stencil.quaternion.clone();
+    const startContentQuaternion = artwork.contentQuaternion.clone();
+    const rootQuaternion = artwork.quaternion.clone();
     const rotationAxisWorld = axisLocal
       ? axisLocal.clone().applyQuaternion(rootQuaternion).applyQuaternion(startContentQuaternion).normalize()
       : null;
-    const planeNormal = rotationAxisWorld ?? stencil.normal;
-    const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(planeNormal, stencil.position);
+    const planeNormal = rotationAxisWorld ?? artwork.normal;
+    const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(planeNormal, artwork.position);
     const pointerObject = getPointerObject(controller);
     const motionObject = getMotionObject(controller);
     const controllerPosition = new THREE.Vector3().setFromMatrixPosition(motionObject.matrixWorld);
@@ -809,7 +810,7 @@ async function bootstrap(): Promise<void> {
     if (dragMode === "rotate-axis" && rotationAxisWorld) {
       activeDrag = {
         mode: dragMode,
-        stencil,
+        artwork,
         controller,
         plane,
         rotationAxisLocal: axisLocal?.clone() ?? null,
@@ -820,7 +821,9 @@ async function bootstrap(): Promise<void> {
         startVector: new THREE.Vector3(),
         startContentQuaternion,
         startGripPosition: controllerPosition,
-        startPosition: stencil.position.clone(),
+        startPosition: artwork.position.clone(),
+        startWidth: artwork.width,
+        startHeight: artwork.height,
         signX,
         signY
       };
@@ -831,10 +834,10 @@ async function bootstrap(): Promise<void> {
       return;
     }
 
-    const localPoint = worldPointToStencilLocal(stencil, point, startContentQuaternion);
+    const localPoint = worldPointToArtworkLocal(artwork, point, startContentQuaternion);
     activeDrag = {
       mode: dragMode,
-      stencil,
+      artwork,
       controller,
       plane,
       rotationAxisLocal: axisLocal?.clone() ?? null,
@@ -845,7 +848,9 @@ async function bootstrap(): Promise<void> {
       startVector: localPoint.clone(),
       startContentQuaternion,
       startGripPosition: new THREE.Vector3().setFromMatrixPosition(motionObject.matrixWorld),
-      startPosition: stencil.position.clone(),
+      startPosition: artwork.position.clone(),
+      startWidth: artwork.width,
+      startHeight: artwork.height,
       signX,
       signY
     };
@@ -856,7 +861,7 @@ async function bootstrap(): Promise<void> {
       return;
     }
 
-    const { controller, stencil, plane } = activeDrag;
+    const { controller, artwork, plane } = activeDrag;
     const pointerObject = getPointerObject(controller);
     const motionObject = getMotionObject(controller);
     const ray = buildControllerRay(pointerObject);
@@ -866,9 +871,9 @@ async function bootstrap(): Promise<void> {
     if (activeDrag.mode === "depth") {
       const current = new THREE.Vector3().setFromMatrixPosition(motionObject.matrixWorld);
       const delta = current.sub(activeDrag.startGripPosition);
-      const distance = delta.dot(stencil.normal);
-      stencil.position.copy(activeDrag.startPosition).add(stencil.normal.clone().multiplyScalar(distance));
-      markAnchorDirty(stencil);
+      const distance = delta.dot(artwork.normal);
+      artwork.position.copy(activeDrag.startPosition).add(artwork.normal.clone().multiplyScalar(distance));
+      markAnchorDirty(artwork);
       return;
     }
 
@@ -877,8 +882,8 @@ async function bootstrap(): Promise<void> {
         return;
       }
       const worldDelta = worldPoint.clone().sub(activeDrag.startWorldPoint);
-      stencil.position.copy(activeDrag.startPosition).add(worldDelta);
-      markAnchorDirty(stencil);
+      artwork.position.copy(activeDrag.startPosition).add(worldDelta);
+      markAnchorDirty(artwork);
       return;
     }
 
@@ -890,13 +895,13 @@ async function bootstrap(): Promise<void> {
       const angle = delta.dot(cameraRight) * 8;
       if (Math.abs(angle) > 1e-5) {
         const worldRotation = new THREE.Quaternion().setFromAxisAngle(activeDrag.rotationAxisWorld, angle);
-        const currentWorldQuaternion = stencil.quaternion
+        const currentWorldQuaternion = artwork.quaternion
           .clone()
-          .multiply(stencil.contentQuaternion.clone());
+          .multiply(artwork.contentQuaternion.clone());
         const nextWorldQuaternion = worldRotation.multiply(currentWorldQuaternion);
-        const nextLocalQuaternion = stencil.quaternion.clone().invert().multiply(nextWorldQuaternion);
-        stencil.setContentQuaternion(nextLocalQuaternion);
-        markAnchorDirty(stencil);
+        const nextLocalQuaternion = artwork.quaternion.clone().invert().multiply(nextWorldQuaternion);
+        artwork.setContentQuaternion(nextLocalQuaternion);
+        markAnchorDirty(artwork);
       }
       activeDrag.lastControllerWorldPosition.copy(controllerPosition);
       return;
@@ -906,26 +911,22 @@ async function bootstrap(): Promise<void> {
       return;
     }
 
-    const localPoint = worldPointToStencilLocal(stencil, worldPoint, activeDrag.startContentQuaternion);
+    const localPoint = worldPointToArtworkLocal(artwork, worldPoint, activeDrag.startContentQuaternion);
 
     const deltaX = (localPoint.x - activeDrag.startHitLocal.x) * activeDrag.signX * 2;
     const deltaY = (localPoint.y - activeDrag.startHitLocal.y) * activeDrag.signY * 2;
 
     switch (activeDrag.mode) {
-      case "scale-x":
-        stencil.scaleLocal(deltaX, 0);
-        activeDrag.startHitLocal.copy(localPoint);
-        markAnchorDirty(stencil);
-        break;
-      case "scale-y":
-        stencil.scaleLocal(0, deltaY);
-        activeDrag.startHitLocal.copy(localPoint);
-        markAnchorDirty(stencil);
-        break;
-      case "scale-xy":
-        stencil.scaleLocal(deltaX, deltaY);
-        activeDrag.startHitLocal.copy(localPoint);
-        markAnchorDirty(stencil);
+      case "scale-corner":
+        if (controller.gripButton.pressed) {
+          artwork.scaleLocal(deltaX, deltaY);
+          activeDrag.startHitLocal.copy(localPoint);
+        } else {
+          const startLength = Math.max(activeDrag.startVector.length(), 1e-5);
+          const factor = THREE.MathUtils.clamp(localPoint.length() / startLength, 0.15, 20);
+          artwork.setLocalSize(activeDrag.startWidth * factor, activeDrag.startHeight * factor);
+        }
+        markAnchorDirty(artwork);
         break;
       default:
         break;
@@ -937,7 +938,7 @@ async function bootstrap(): Promise<void> {
       return;
     }
 
-    const stencil = activeDrag.stencil;
+    const artwork = activeDrag.artwork;
     const ray = buildControllerRay(getPointerObject(snapController));
     const nextHit = hitTest.update(frame);
     const hit =
@@ -949,11 +950,11 @@ async function bootstrap(): Promise<void> {
       return;
     }
 
-    const twist = extractTwistAroundAxis(stencil.contentQuaternion, new THREE.Vector3(0, 0, 1));
-    stencil.position.copy(hit.position);
-    stencil.root.quaternion.copy(makePreviewQuaternion(hit.normal, ray.direction));
-    stencil.setContentQuaternion(twist);
-    markAnchorDirty(stencil);
+    const twist = extractTwistAroundAxis(artwork.contentQuaternion, new THREE.Vector3(0, 0, 1));
+    artwork.position.copy(hit.position);
+    artwork.root.quaternion.copy(makePreviewQuaternion(hit.normal, ray.direction));
+    artwork.setContentQuaternion(twist);
+    markAnchorDirty(artwork);
   };
 
   const isTrackingReliable = (frame: XRFrame): boolean => {
@@ -1149,7 +1150,7 @@ async function bootstrap(): Promise<void> {
     setMode("drawing");
     overlay.setState({ returnToArReady: false });
     if (startImageElement && store.objects.length === 0) {
-      ensurePreviewStencil();
+      ensurePreviewArtwork();
     }
     console.info(`XR reference space: ${referenceSpaceType}`);
   });
@@ -1161,8 +1162,8 @@ async function bootstrap(): Promise<void> {
     xrReferenceSpaceResetHandler = null;
     cancelExitHold();
     cancelCreationHold();
-    previewStencil?.root.removeFromParent();
-    previewStencil = null;
+    previewArtwork?.root.removeFromParent();
+    previewArtwork = null;
     xrSessionHandle = null;
     xrReferenceSpace = null;
     for (const state of anchorStates.values()) {
@@ -1240,7 +1241,7 @@ async function bootstrap(): Promise<void> {
     // Drawing-mode long-hold creation is intentionally disabled for now.
     // We may restore it later if we need both flows.
 
-    if (previewStencil && mode === "drawing") {
+    if (previewArtwork && mode === "drawing") {
       const now = performance.now();
       if (
         frame &&
@@ -1256,7 +1257,7 @@ async function bootstrap(): Promise<void> {
             : hitTest.getStableHit(APP_CONFIG.interaction.stableHitMaxAgeMs);
       }
 
-      updatePreviewStencil(
+      updatePreviewArtwork(
         controller,
         previewPlacementHit && previewPlacementHit.distance >= APP_CONFIG.interaction.minValidHitDistance
           ? previewPlacementHit
@@ -1295,7 +1296,7 @@ async function bootstrap(): Promise<void> {
       if (controller.gripButton.justPressed && store.selected && !store.selected.locked && !activeDrag) {
         activeDrag = {
           mode: "depth",
-          stencil: store.selected,
+          artwork: store.selected,
           controller,
           plane: new THREE.Plane(),
           rotationAxisLocal: null,
@@ -1307,6 +1308,8 @@ async function bootstrap(): Promise<void> {
           startContentQuaternion: store.selected.content.quaternion.clone(),
           startGripPosition: new THREE.Vector3().setFromMatrixPosition(getMotionObject(controller).matrixWorld),
           startPosition: store.selected.position.clone(),
+          startWidth: store.selected.width,
+          startHeight: store.selected.height,
           signX: 0,
           signY: 0
         };
@@ -1362,10 +1365,10 @@ async function bootstrap(): Promise<void> {
             Math.abs(controller.axes[1]) <= JOYSTICK_DEAD_ZONE));
 
       if (shouldFlushSelectedAnchor) {
-        for (const stencil of store.objects) {
-          const state = anchorStates.get(stencil.id);
+        for (const artwork of store.objects) {
+          const state = anchorStates.get(artwork.id);
           if (state?.dirty && !state.creating) {
-            void rebuildAnchorFromFrame(frame, stencil);
+            void rebuildAnchorFromFrame(frame, artwork);
           }
         }
       }

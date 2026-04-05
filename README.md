@@ -1,4 +1,4 @@
-﻿# Overdraw
+# Overdraw
 
 Minimal WebXR AR app for Meta Quest 3 + Quest Browser with a drawing-first UX: clean drawing mode by default, explicit editing mode, multi-image support, and low-risk controller input mapping.
 
@@ -35,27 +35,27 @@ Minimal WebXR AR app for Meta Quest 3 + Quest Browser with a drawing-first UX: c
 
 ```text
 .
-├── index.html
-├── package.json
-├── tsconfig.json
-├── vite.config.ts
-└── src
-   ├── main.ts
-   ├── styles.css
-   ├── interaction
-   │  ├── placement.ts
-   │  └── transformControls.ts
-   ├── rendering
-   │  ├── plane.ts
-   │  ├── reticle.ts
-   │  ├── scene.ts
-   │  └── stencil.ts
-   ├── ui
-   │  └── overlay.ts
-   └── xr
-      ├── controllerInput.ts
-      ├── hitTest.ts
-      └── session.ts
++-- index.html
++-- package.json
++-- tsconfig.json
++-- vite.config.ts
+L-- src
+   +-- main.ts
+   +-- styles.css
+   +-- interaction
+   �  +-- placement.ts
+   �  L-- transformControls.ts
+   +-- rendering
+   �  +-- plane.ts
+   �  +-- reticle.ts
+   �  +-- scene.ts
+   �  L-- artwork.ts
+   +-- ui
+   �  L-- overlay.ts
+   L-- xr
+      +-- controllerInput.ts
+      +-- hitTest.ts
+      L-- session.ts
 ```
 
 ## Run Locally
@@ -146,7 +146,7 @@ This keeps the image upright relative to gravity even when the surface is tilted
   Polls controller buttons, exposes `A/B/trigger/grip` snapshots, thumbstick axes, and controller ray visuals.
 - `rendering/scene.ts`
   Creates the Three.js renderer, scene, camera, and lights.
-- `rendering/stencil.ts`
+- `rendering/artwork.ts`
   Owns multi-object image rendering, per-object handles, selection visuals, and texture replacement.
 - `ui/overlay.ts`
   Builds the start page and the lightweight HTML interface.
