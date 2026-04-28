@@ -6,6 +6,10 @@ const MIN_SIDE = 0.01;
 const MAX_SIDE = 2.0;
 const MIN_GIZMO_SIZE = 0.2;
 const DEFAULT_OPACITY = 0.68;
+export const PANEL_BUTTON_NAME = "depth-button" as const;
+export const PANEL_RESET_BUTTON_NAME = "reset-button" as const;
+export const PANEL_TRANSPARENCY_BUTTON_NAME = "opacity-button" as const;
+export const PANEL_EXIT_BUTTON_NAME = "exit-button" as const;
 
 const HANDLE_NAMES = {
   body: "body",
@@ -24,10 +28,16 @@ const HANDLE_NAMES = {
 } as const;
 
 export type HandleName = (typeof HANDLE_NAMES)[keyof typeof HANDLE_NAMES];
+export type InteractionName =
+  | HandleName
+  | typeof PANEL_BUTTON_NAME
+  | typeof PANEL_RESET_BUTTON_NAME
+  | typeof PANEL_TRANSPARENCY_BUTTON_NAME
+  | typeof PANEL_EXIT_BUTTON_NAME;
 
 export interface HandleIntersection {
   object: ArtworkObject;
-  handle: HandleName;
+  handle: InteractionName;
   point: THREE.Vector3;
 }
 
@@ -46,6 +56,72 @@ function createHandleMaterial(color: number): THREE.MeshBasicMaterial {
     depthWrite: false,
     side: THREE.DoubleSide
   });
+}
+
+function createRoundedRectShape(width: number, height: number, radius: number): THREE.Shape {
+  const shape = new THREE.Shape();
+  const halfWidth = width * 0.5;
+  const halfHeight = height * 0.5;
+  const clampedRadius = Math.min(radius, halfWidth, halfHeight);
+
+  shape.moveTo(-halfWidth + clampedRadius, -halfHeight);
+  shape.lineTo(halfWidth - clampedRadius, -halfHeight);
+  shape.absarc(halfWidth - clampedRadius, -halfHeight + clampedRadius, clampedRadius, -Math.PI * 0.5, 0, false);
+  shape.lineTo(halfWidth, halfHeight - clampedRadius);
+  shape.absarc(halfWidth - clampedRadius, halfHeight - clampedRadius, clampedRadius, 0, Math.PI * 0.5, false);
+  shape.lineTo(-halfWidth + clampedRadius, halfHeight);
+  shape.absarc(-halfWidth + clampedRadius, halfHeight - clampedRadius, clampedRadius, Math.PI * 0.5, Math.PI, false);
+  shape.lineTo(-halfWidth, -halfHeight + clampedRadius);
+  shape.absarc(-halfWidth + clampedRadius, -halfHeight + clampedRadius, clampedRadius, Math.PI, Math.PI * 1.5, false);
+  return shape;
+}
+
+function createRoundedRectGeometry(width: number, height: number, radius: number): THREE.ShapeGeometry {
+  return new THREE.ShapeGeometry(createRoundedRectShape(width, height, radius));
+}
+
+function createLabelTexture(text: string, fontSize = 36): THREE.CanvasTexture {
+  const canvas = document.createElement("canvas");
+  canvas.width = 512;
+  canvas.height = 128;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) {
+    throw new Error("2D canvas context is unavailable.");
+  }
+
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.fillStyle = "rgba(0, 0, 0, 0)";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.fillStyle = "#eef5ff";
+  ctx.font = `600 ${fontSize}px Segoe UI`;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText(text, canvas.width / 2, canvas.height / 2);
+
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  texture.needsUpdate = true;
+  return texture;
+}
+
+export function createLabelMesh(
+  text: string,
+  width: number,
+  height: number,
+  fontSize: number
+): THREE.Mesh<THREE.PlaneGeometry, THREE.MeshBasicMaterial> {
+  const texture = createLabelTexture(text, fontSize);
+  const mesh = new THREE.Mesh(
+    new THREE.PlaneGeometry(width, height),
+    new THREE.MeshBasicMaterial({
+      map: texture,
+      transparent: true,
+      depthTest: false,
+      depthWrite: false
+    })
+  );
+  mesh.renderOrder = 42;
+  return mesh;
 }
 
 function disposeTexture(texture: THREE.Texture | null): void {
@@ -68,10 +144,26 @@ export class ArtworkObject {
   selected = false;
   private texture: THREE.Texture | null = null;
   private readonly size = new THREE.Vector2(1, 1);
+  private baseOpacity = DEFAULT_OPACITY;
+  private opacityMultiplier = 1;
   private readonly boxLine: THREE.LineSegments;
   private readonly glassMesh: THREE.Mesh<THREE.PlaneGeometry, THREE.MeshBasicMaterial>;
   private readonly projectionLines: THREE.LineSegments;
   private readonly handles = new Map<HandleName, THREE.Object3D>();
+  private readonly controls = new Map<InteractionName, THREE.Object3D>();
+  private readonly panelRoot: THREE.Group;
+  private readonly panelBackground: THREE.Mesh<THREE.ShapeGeometry, THREE.MeshBasicMaterial>;
+  private readonly panelButton: THREE.Group;
+  private readonly panelButtonHitArea: THREE.Mesh<THREE.BufferGeometry, THREE.MeshBasicMaterial>;
+  private readonly panelResetButton: THREE.Group;
+  private readonly panelResetButtonHitArea: THREE.Mesh<THREE.BufferGeometry, THREE.MeshBasicMaterial>;
+  private readonly panelOpacityButton: THREE.Group;
+  private readonly panelOpacityButtonHitArea: THREE.Mesh<THREE.BufferGeometry, THREE.MeshBasicMaterial>;
+  private readonly panelExitButton: THREE.Group;
+  private readonly panelExitButtonHitArea: THREE.Mesh<THREE.BufferGeometry, THREE.MeshBasicMaterial>;
+  private readonly initialRootPosition = new THREE.Vector3();
+  private readonly initialRootQuaternion = new THREE.Quaternion();
+  private readonly initialContentQuaternion = new THREE.Quaternion();
 
   constructor(options: CreateArtworkOptions = {}) {
     const material = new THREE.MeshBasicMaterial({
@@ -134,6 +226,119 @@ export class ArtworkObject {
     this.projectionLines.visible = false;
     this.selectionRoot.add(this.projectionLines);
 
+    this.panelRoot = new THREE.Group();
+    this.panelRoot.renderOrder = 40;
+    this.selectionRoot.add(this.panelRoot);
+
+    this.panelBackground = new THREE.Mesh(
+      createRoundedRectGeometry(0.92, 0.15, 0.075),
+      new THREE.MeshBasicMaterial({
+        color: 0x0b1118,
+        transparent: true,
+        opacity: 0.9,
+        depthTest: false,
+        depthWrite: false
+      })
+    );
+    this.panelBackground.renderOrder = 40;
+    this.panelRoot.add(this.panelBackground);
+
+    this.panelButton = new THREE.Group();
+    this.panelButton.renderOrder = 41;
+    this.panelButton.position.set(-0.285, 0, 0.002);
+    this.panelRoot.add(this.panelButton);
+
+    this.panelButtonHitArea = new THREE.Mesh(
+      new THREE.CircleGeometry(0.042, 40),
+      new THREE.MeshBasicMaterial({
+        color: 0x2a8cff,
+        transparent: true,
+        opacity: 0.92,
+        depthTest: false,
+        depthWrite: false
+      })
+    );
+    this.panelButtonHitArea.renderOrder = 41;
+    this.panelButton.add(this.panelButtonHitArea);
+    this.controls.set(PANEL_BUTTON_NAME, this.panelButton);
+    this.raycastTargets.push(this.panelButtonHitArea);
+
+    const label = createLabelMesh("Глубина", 0.12, 0.032, 22);
+    label.position.set(0, 0, 0.003);
+    this.panelButton.add(label);
+
+    this.panelResetButton = new THREE.Group();
+    this.panelResetButton.renderOrder = 41;
+    this.panelResetButton.position.set(-0.095, 0, 0.002);
+    this.panelRoot.add(this.panelResetButton);
+
+    this.panelResetButtonHitArea = new THREE.Mesh(
+      new THREE.CircleGeometry(0.042, 40),
+      new THREE.MeshBasicMaterial({
+        color: 0x4f1f25,
+        transparent: true,
+        opacity: 0.92,
+        depthTest: false,
+        depthWrite: false
+      })
+    );
+    this.panelResetButtonHitArea.renderOrder = 41;
+    this.panelResetButton.add(this.panelResetButtonHitArea);
+    this.controls.set(PANEL_RESET_BUTTON_NAME, this.panelResetButton);
+    this.raycastTargets.push(this.panelResetButtonHitArea);
+
+    const resetLabel = createLabelMesh("Сброс", 0.095, 0.03, 22);
+    resetLabel.position.set(0, 0, 0.003);
+    this.panelResetButton.add(resetLabel);
+
+    this.panelOpacityButton = new THREE.Group();
+    this.panelOpacityButton.renderOrder = 41;
+    this.panelOpacityButton.position.set(0.095, 0, 0.002);
+    this.panelRoot.add(this.panelOpacityButton);
+
+    this.panelOpacityButtonHitArea = new THREE.Mesh(
+      new THREE.CircleGeometry(0.042, 40),
+      new THREE.MeshBasicMaterial({
+        color: 0x2f7f74,
+        transparent: true,
+        opacity: 0.92,
+        depthTest: false,
+        depthWrite: false
+      })
+    );
+    this.panelOpacityButtonHitArea.renderOrder = 41;
+    this.panelOpacityButton.add(this.panelOpacityButtonHitArea);
+    this.controls.set(PANEL_TRANSPARENCY_BUTTON_NAME, this.panelOpacityButton);
+    this.raycastTargets.push(this.panelOpacityButtonHitArea);
+
+    const opacityLabel = createLabelMesh("Прозрачность", 0.14, 0.03, 16);
+    opacityLabel.position.set(0, 0, 0.003);
+    this.panelOpacityButton.add(opacityLabel);
+
+    this.panelExitButton = new THREE.Group();
+    this.panelExitButton.renderOrder = 41;
+    this.panelExitButton.position.set(0.285, 0, 0.002);
+    this.panelRoot.add(this.panelExitButton);
+
+    this.panelExitButtonHitArea = new THREE.Mesh(
+      new THREE.CircleGeometry(0.042, 40),
+      new THREE.MeshBasicMaterial({
+        color: 0x7a3d1f,
+        transparent: true,
+        opacity: 0.92,
+        depthTest: false,
+        depthWrite: false
+      })
+    );
+    this.panelExitButtonHitArea.renderOrder = 41;
+    this.panelExitButton.add(this.panelExitButtonHitArea);
+    this.controls.set(PANEL_EXIT_BUTTON_NAME, this.panelExitButton);
+    this.raycastTargets.push(this.panelExitButtonHitArea);
+
+    const exitLabel = createLabelMesh("Выход", 0.09, 0.03, 20);
+    exitLabel.position.set(0, 0, 0.003);
+    this.panelExitButton.add(exitLabel);
+
     this.createHandles();
     this.applyPosition(options.position ?? new THREE.Vector3(0, 1.35, -1));
     this.root.quaternion.copy(options.quaternion ?? new THREE.Quaternion());
@@ -145,6 +350,9 @@ export class ArtworkObject {
     }
 
     this.applySize(DEFAULT_MAX_SIDE);
+    this.initialRootPosition.copy(this.root.position);
+    this.initialRootQuaternion.copy(this.root.quaternion);
+    this.initialContentQuaternion.copy(this.content.quaternion);
     this.setEditingState(false, false);
   }
 
@@ -158,6 +366,7 @@ export class ArtworkObject {
       object.renderOrder = 31;
       this.selectionRoot.add(object);
       this.handles.set(name, object);
+      this.controls.set(name, object);
       this.raycastTargets.push(...raycastObjects);
     };
 
@@ -177,7 +386,6 @@ export class ArtworkObject {
 
     this.update();
   }
-
   private createTriangleHandle(
     name: HandleName,
     color: number,
@@ -213,6 +421,12 @@ export class ArtworkObject {
 
     this.boxLine.scale.set(gizmoHalfX * 2, gizmoHalfY * 2, 1);
     this.selectionRoot.quaternion.copy(this.content.quaternion);
+    this.panelRoot.position.set(0, -gizmoHalfY - 0.11, 0.004);
+    this.panelBackground.scale.set(1, 1, 1);
+    this.panelButton.position.set(-0.285, 0, 0.002);
+    this.panelResetButton.position.set(-0.095, 0, 0.002);
+    this.panelOpacityButton.position.set(0.095, 0, 0.002);
+    this.panelExitButton.position.set(0.285, 0, 0.002);
     this.glassMesh.scale.set(gizmoHalfX * 2, gizmoHalfY * 2, 1);
     this.glassMesh.position.set(0, 0, 0.001);
     this.glassMesh.visible = this.content.scale.x < MIN_GIZMO_SIZE || this.content.scale.y < MIN_GIZMO_SIZE;
@@ -346,8 +560,29 @@ export class ArtworkObject {
     this.update();
   }
 
+  resetTransform(): void {
+    this.root.position.copy(this.initialRootPosition);
+    this.root.quaternion.copy(this.initialRootQuaternion);
+    this.content.quaternion.copy(this.initialContentQuaternion);
+    this.update();
+  }
+
   setDisplayOpacity(opacity: number): void {
-    this.mesh.material.opacity = THREE.MathUtils.clamp(opacity, 0, 1);
+    this.baseOpacity = THREE.MathUtils.clamp(opacity, 0, 1);
+    this.updateOpacity();
+  }
+
+  getDisplayOpacity(): number {
+    return this.baseOpacity;
+  }
+
+  setOpacityMultiplier(multiplier: number): void {
+    this.opacityMultiplier = THREE.MathUtils.clamp(multiplier, 0, 1);
+    this.updateOpacity();
+  }
+
+  private updateOpacity(): void {
+    this.mesh.material.opacity = THREE.MathUtils.clamp(this.baseOpacity * this.opacityMultiplier, 0, 1);
   }
 
   setEditingState(editing: boolean, selected: boolean): void {
@@ -362,16 +597,32 @@ export class ArtworkObject {
     this.locked = locked;
   }
 
-  setHoveredHandle(handle: HandleName | null): void {
-    for (const [name, object] of this.handles) {
+  setHoveredHandle(handle: InteractionName | null): void {
+    for (const [name, object] of this.controls) {
       const scale = name === handle ? 1.1 : 1;
       object.scale.setScalar(scale);
     }
   }
 
-  matchesTarget(target: THREE.Object3D): HandleName | null {
+  matchesTarget(target: THREE.Object3D): InteractionName | null {
     if (target === this.mesh || target === this.glassMesh) {
       return HANDLE_NAMES.body;
+    }
+
+    if (target === this.panelButtonHitArea) {
+      return PANEL_BUTTON_NAME;
+    }
+
+    if (target === this.panelResetButtonHitArea) {
+      return PANEL_RESET_BUTTON_NAME;
+    }
+
+    if (target === this.panelOpacityButtonHitArea) {
+      return PANEL_TRANSPARENCY_BUTTON_NAME;
+    }
+
+    if (target === this.panelExitButtonHitArea) {
+      return PANEL_EXIT_BUTTON_NAME;
     }
 
     const targetHandle = target.userData.handleName as HandleName | undefined;
@@ -447,6 +698,15 @@ export class ArtworkStore {
     return true;
   }
 
+  clearAll(): void {
+    const objects = [...this.objects];
+    for (const artwork of objects) {
+      this.scene.remove(artwork.root);
+    }
+    this.objects.length = 0;
+    this.selected = null;
+  }
+
   select(target: ArtworkObject | null, editing: boolean): void {
     this.selected = target && !target.locked ? target : null;
     for (const artwork of this.objects) {
@@ -460,7 +720,7 @@ export class ArtworkStore {
     }
   }
 
-  setHoveredHandle(handle: HandleName | null): void {
+  setHoveredHandle(handle: InteractionName | null): void {
     for (const artwork of this.objects) {
       artwork.setHoveredHandle(artwork === this.selected ? handle : null);
     }
@@ -469,6 +729,12 @@ export class ArtworkStore {
   setGlobalOpacity(opacity: number): void {
     for (const artwork of this.objects) {
       artwork.setDisplayOpacity(opacity);
+    }
+  }
+
+  setGlobalOpacityMultiplier(multiplier: number): void {
+    for (const artwork of this.objects) {
+      artwork.setOpacityMultiplier(multiplier);
     }
   }
 

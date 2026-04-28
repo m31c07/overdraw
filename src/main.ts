@@ -1,8 +1,16 @@
 import * as THREE from "three";
 import "./styles.css";
 import { createAppScene } from "./rendering/scene";
-import { SurfaceReticle } from "./rendering/reticle";
-import { ArtworkStore, ArtworkObject, type HandleName } from "./rendering/artwork";
+import {
+  ArtworkStore,
+  ArtworkObject,
+  PANEL_BUTTON_NAME,
+  PANEL_EXIT_BUTTON_NAME,
+  PANEL_RESET_BUTTON_NAME,
+  PANEL_TRANSPARENCY_BUTTON_NAME,
+  createLabelMesh,
+  type HandleName
+} from "./rendering/artwork";
 import { createOverlay, type LibraryItem } from "./ui/overlay";
 import { createXRSessionController, buildControllerRay } from "./xr/session";
 import { XRHitTestManager } from "./xr/hitTest";
@@ -11,7 +19,7 @@ import type { SurfaceHit } from "./xr/hitTest";
 import { APP_CONFIG } from "./config/app";
 
 type AppMode = "drawing" | "editing";
-type DragMode = "move" | "scale-corner" | "rotate-axis" | "depth";
+type DragMode = "move" | "scale-corner" | "rotate-axis" | "depth" | "opacity";
 
 interface DragSession {
   mode: DragMode;
@@ -29,12 +37,22 @@ interface DragSession {
   startPosition: THREE.Vector3;
   startWidth: number;
   startHeight: number;
+  startOpacity: number;
   signX: number;
   signY: number;
 }
 
-const DEFAULT_DRAWING_OPACITY = 0.68;
-const HELD_DRAWING_OPACITY = 0.12;
+type ResetConfirmChoice = "yes" | "no";
+
+interface ResetConfirmPanel {
+  root: THREE.Group;
+  yesButton: THREE.Group;
+  noButton: THREE.Group;
+  yesHitArea: THREE.Mesh<THREE.ShapeGeometry, THREE.MeshBasicMaterial>;
+  noHitArea: THREE.Mesh<THREE.ShapeGeometry, THREE.MeshBasicMaterial>;
+}
+
+const DRAWING_HOLD_OPACITY_MULTIPLIER = 0.18;
 const JOYSTICK_DEAD_ZONE = 0.2;
 const ROTATE_SPEED = 1.5;
 const SCALE_SPEED = 0.95;
@@ -118,12 +136,6 @@ interface AnchorState {
   binding: AnchorBinding;
   dirty: boolean;
   creating: boolean;
-}
-
-interface CreationHoldState {
-  active: boolean;
-  startedAt: number;
-  controller: ControllerState | null;
 }
 
 function createPresetDataUrl(
@@ -362,19 +374,6 @@ function makePreviewQuaternion(
   return makeQuaternionFromSurfaceAndRay(normal, rayDirectionInput);
 }
 
-function extractTwistAroundAxis(
-  quaternion: THREE.Quaternion,
-  axisInput: THREE.Vector3
-): THREE.Quaternion {
-  const axis = axisInput.clone().normalize();
-  const projection = new THREE.Vector3(quaternion.x, quaternion.y, quaternion.z).projectOnVector(axis);
-  const twist = new THREE.Quaternion(projection.x, projection.y, projection.z, quaternion.w);
-  if (twist.lengthSq() < 1e-8) {
-    return new THREE.Quaternion();
-  }
-  return twist.normalize();
-}
-
 function handleToDragMode(
   handle: HandleName
 ): { mode: DragMode; signX: number; signY: number; axisLocal: THREE.Vector3 | null } | null {
@@ -442,32 +441,6 @@ function createTextSprite(text: string): THREE.Sprite {
   ctx.fillText(text, canvas.width / 2, canvas.height / 2);
 
   const texture = new THREE.CanvasTexture(canvas);
-  texture.needsUpdate = true;
-  const material = new THREE.SpriteMaterial({
-    map: texture,
-    transparent: true,
-    depthTest: false,
-    depthWrite: false
-  });
-  const sprite = new THREE.Sprite(material);
-  sprite.scale.set(0.18, 0.045, 1);
-  sprite.renderOrder = 50;
-  return sprite;
-}
-
-function createHoldTimerSprite(): {
-  sprite: THREE.Sprite;
-  update: (progress: number) => void;
-} {
-  const canvas = document.createElement("canvas");
-  canvas.width = 256;
-  canvas.height = 256;
-  const ctx = canvas.getContext("2d");
-  if (!ctx) {
-    throw new Error("2D canvas context is unavailable.");
-  }
-
-  const texture = new THREE.CanvasTexture(canvas);
   const sprite = new THREE.Sprite(
     new THREE.SpriteMaterial({
       map: texture,
@@ -476,28 +449,119 @@ function createHoldTimerSprite(): {
       depthWrite: false
     })
   );
-  sprite.scale.set(0.08, 0.08, 1);
-  sprite.renderOrder = 60;
+  sprite.scale.set(0.18, 0.045, 1);
+  sprite.renderOrder = 50;
+  texture.needsUpdate = true;
+  return sprite;
+}
 
-  const update = (progress: number) => {
-    const p = THREE.MathUtils.clamp(progress, 0, 1);
-    const center = canvas.width * 0.5;
-    const radius = APP_CONFIG.creation.timerRadius;
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    ctx.strokeStyle = "rgba(255,255,255,0.18)";
-    ctx.lineWidth = APP_CONFIG.creation.timerLineWidth;
-    ctx.beginPath();
-    ctx.arc(center, center, radius, 0, Math.PI * 2);
-    ctx.stroke();
-    ctx.strokeStyle = "#eef5ff";
-    ctx.beginPath();
-    ctx.arc(center, center, radius, -Math.PI * 0.5, -Math.PI * 0.5 + Math.PI * 2 * p);
-    ctx.stroke();
-    texture.needsUpdate = true;
+function createConfirmPanel(
+  questionText: string,
+  yesText: string,
+  noText: string
+): ResetConfirmPanel {
+  const root = new THREE.Group();
+  root.visible = false;
+  root.renderOrder = 80;
+
+  const background = new THREE.Mesh(
+    new THREE.ShapeGeometry(
+      (() => {
+        const shape = new THREE.Shape();
+        const width = 0.78;
+        const height = 0.28;
+        const radius = 0.06;
+        const halfWidth = width * 0.5;
+        const halfHeight = height * 0.5;
+        shape.moveTo(-halfWidth + radius, -halfHeight);
+        shape.lineTo(halfWidth - radius, -halfHeight);
+        shape.absarc(halfWidth - radius, -halfHeight + radius, radius, -Math.PI * 0.5, 0, false);
+        shape.lineTo(halfWidth, halfHeight - radius);
+        shape.absarc(halfWidth - radius, halfHeight - radius, radius, 0, Math.PI * 0.5, false);
+        shape.lineTo(-halfWidth + radius, halfHeight);
+        shape.absarc(-halfWidth + radius, halfHeight - radius, radius, Math.PI * 0.5, Math.PI, false);
+        shape.lineTo(-halfWidth, -halfHeight + radius);
+        shape.absarc(-halfWidth + radius, -halfHeight + radius, radius, Math.PI, Math.PI * 1.5, false);
+        return shape;
+      })()
+    ),
+    new THREE.MeshBasicMaterial({
+      color: 0x0b1118,
+      transparent: true,
+      opacity: 0.96,
+      depthTest: false,
+      depthWrite: false
+    })
+  );
+  background.renderOrder = 80;
+  root.add(background);
+
+  const question = createLabelMesh(questionText, 0.68, 0.12, 28);
+  question.position.set(0, 0.08, 0.002);
+  root.add(question);
+
+  const createChoiceButton = (
+    choice: ResetConfirmChoice,
+    color: number,
+    label: string,
+    x: number
+  ): { button: THREE.Group; hitArea: THREE.Mesh<THREE.ShapeGeometry, THREE.MeshBasicMaterial> } => {
+    const button = new THREE.Group();
+    button.position.set(x, -0.055, 0.003);
+    button.renderOrder = 81;
+
+    const hitArea = new THREE.Mesh(
+      new THREE.ShapeGeometry(
+        (() => {
+          const shape = new THREE.Shape();
+          const width = 0.17;
+          const height = 0.08;
+          const radius = 0.04;
+          const halfWidth = width * 0.5;
+          const halfHeight = height * 0.5;
+          shape.moveTo(-halfWidth + radius, -halfHeight);
+          shape.lineTo(halfWidth - radius, -halfHeight);
+          shape.absarc(halfWidth - radius, -halfHeight + radius, radius, -Math.PI * 0.5, 0, false);
+          shape.lineTo(halfWidth, halfHeight - radius);
+          shape.absarc(halfWidth - radius, halfHeight - radius, radius, 0, Math.PI * 0.5, false);
+          shape.lineTo(-halfWidth + radius, halfHeight);
+          shape.absarc(-halfWidth + radius, halfHeight - radius, radius, Math.PI * 0.5, Math.PI, false);
+          shape.lineTo(-halfWidth, -halfHeight + radius);
+          shape.absarc(-halfWidth + radius, -halfHeight + radius, radius, Math.PI, Math.PI * 1.5, false);
+          return shape;
+        })()
+      ),
+      new THREE.MeshBasicMaterial({
+        color,
+        transparent: true,
+        opacity: 0.94,
+        depthTest: false,
+        depthWrite: false
+      })
+    );
+    hitArea.renderOrder = 81;
+    hitArea.userData.confirmChoice = choice;
+    button.add(hitArea);
+
+    const labelMesh = createLabelMesh(label, 0.09, 0.026, 34);
+    labelMesh.position.set(0, 0, 0.004);
+    button.add(labelMesh);
+
+    return { button, hitArea };
   };
 
-  update(0);
-  return { sprite, update };
+  const yes = createChoiceButton("yes", 0x2a8cff, yesText, -0.13);
+  const no = createChoiceButton("no", 0x4f1f25, noText, 0.13);
+  root.add(yes.button);
+  root.add(no.button);
+
+  return {
+    root,
+    yesButton: yes.button,
+    noButton: no.button,
+    yesHitArea: yes.hitArea,
+    noHitArea: no.hitArea
+  };
 }
 
 async function bootstrap(): Promise<void> {
@@ -506,24 +570,31 @@ async function bootstrap(): Promise<void> {
   const overlay = createOverlay(library);
   const appScene = createAppScene(overlay.canvasHost);
   const store = new ArtworkStore(appScene.scene);
-  const reticle = new SurfaceReticle();
-  appScene.scene.add(reticle.mesh);
 
   const xrSession = createXRSessionController(appScene, overlay.root);
   const hitTest = new XRHitTestManager();
   const controllers = createControllerManager(appScene);
+  const resetConfirmRaycaster = new THREE.Raycaster();
+  const exitConfirmRaycaster = new THREE.Raycaster();
   const clock = new THREE.Clock();
   const anchorStates = new Map<string, AnchorState>();
-  const creationHold: CreationHoldState = {
-    active: false,
-    startedAt: 0,
-    controller: null
-  };
-  let exitHoldStartedAt = 0;
-  const holdTimer = createHoldTimerSprite();
   const editHint = createTextSprite(APP_CONFIG.ui.editModeHint);
-  const exitHint = createTextSprite("Выходим");
+  const resetConfirmPanel = createConfirmPanel(
+    "Вы уверены что хотите всё сбросить и начать сначала?",
+    "Да",
+    "Нет"
+  );
+  const exitConfirmPanel = createConfirmPanel(
+    "Выйти из режима дополненной реальности?",
+    "Да",
+    "Нет"
+  );
   let previewArtwork: ArtworkObject | null = null;
+  let resetConfirmOpen = false;
+  let exitConfirmOpen = false;
+  let pendingResetToFreshStart = false;
+  let pendingExitSessionEnd = false;
+  let suppressSelectionClearOnRelease = false;
 
   let mode: AppMode = "drawing";
   let inSession = false;
@@ -542,10 +613,8 @@ async function bootstrap(): Promise<void> {
   controllers.primary.grip.add(editHint);
   editHint.position.set(0.04, 0.045, 0.02);
   controllers.secondary.grip.add(editHint.clone());
-  exitHint.visible = false;
-  exitHint.position.set(0.04, 0.12, 0.02);
-  holdTimer.sprite.visible = false;
-  holdTimer.sprite.position.set(0.04, 0.06, 0.02);
+  appScene.scene.add(resetConfirmPanel.root);
+  appScene.scene.add(exitConfirmPanel.root);
 
   const getAnchorState = (artwork: ArtworkObject): AnchorState => {
     let state = anchorStates.get(artwork.id);
@@ -572,34 +641,6 @@ async function bootstrap(): Promise<void> {
 
     state.binding.clear();
     anchorStates.delete(artwork.id);
-  };
-
-  const cancelCreationHold = () => {
-    creationHold.active = false;
-    creationHold.startedAt = 0;
-    creationHold.controller = null;
-    holdTimer.sprite.visible = false;
-    holdTimer.sprite.removeFromParent();
-  };
-
-  const cancelExitHold = () => {
-    exitHoldStartedAt = 0;
-    exitHint.visible = false;
-    exitHint.removeFromParent();
-    holdTimer.sprite.visible = false;
-    holdTimer.sprite.removeFromParent();
-  };
-
-  const updateExitHoldVisual = (controller: ControllerState, progress: number) => {
-    if (exitHint.parent !== controller.grip) {
-      controller.grip.add(exitHint);
-    }
-    if (holdTimer.sprite.parent !== controller.grip) {
-      controller.grip.add(holdTimer.sprite);
-    }
-    exitHint.visible = true;
-    holdTimer.sprite.visible = true;
-    holdTimer.update(progress);
   };
 
   const ensurePreviewArtwork = () => {
@@ -708,6 +749,7 @@ async function bootstrap(): Promise<void> {
     }
 
     endDrag();
+    closeResetConfirm();
     previewPlacementHit = null;
     updateVisualState();
   };
@@ -739,19 +781,18 @@ async function bootstrap(): Promise<void> {
 
   const updateVisualState = () => {
     controllers.setEditingVisible(
-      mode === "editing" || creationHold.active || Boolean(previewArtwork) || exitHoldStartedAt > 0
+      mode === "editing" || Boolean(previewArtwork)
     );
     store.setEditingVisuals(mode === "editing");
 
-    if (mode === "drawing" && !creationHold.active && !previewArtwork) {
+    if (mode === "drawing" && !previewArtwork) {
       const controller = controllers.getPreferred();
       const triggerPressed = controller?.trigger.pressed ?? false;
       const gripPressed = controller?.gripButton.pressed ?? false;
-      const opacity = triggerPressed ? (gripPressed ? 0 : HELD_DRAWING_OPACITY) : DEFAULT_DRAWING_OPACITY;
-      store.setGlobalOpacity(opacity);
-      reticle.hide();
+      const multiplier = triggerPressed ? (gripPressed ? 0 : DRAWING_HOLD_OPACITY_MULTIPLIER) : 1;
+      store.setGlobalOpacityMultiplier(multiplier);
     } else {
-      store.setGlobalOpacity(DEFAULT_DRAWING_OPACITY);
+      store.setGlobalOpacityMultiplier(1);
     }
 
     updateOverlayState();
@@ -764,12 +805,181 @@ async function bootstrap(): Promise<void> {
     updateVisualState();
   };
 
-  const clearSelectionIfAllowed = () => {
-    if (store.selected?.locked) {
+  const closeResetConfirm = () => {
+    resetConfirmOpen = false;
+    setResetConfirmHovered(null);
+    resetConfirmPanel.root.visible = false;
+  };
+
+  const closeExitConfirm = () => {
+    exitConfirmOpen = false;
+    setExitConfirmHovered(null);
+    exitConfirmPanel.root.visible = false;
+  };
+
+  const openResetConfirm = () => {
+    resetConfirmOpen = true;
+    resetConfirmPanel.root.visible = true;
+  };
+
+  const openExitConfirm = () => {
+    exitConfirmOpen = true;
+    exitConfirmPanel.root.visible = true;
+  };
+
+  const resetToInitialArState = () => {
+    endDrag();
+    closeResetConfirm();
+
+    for (const artwork of [...store.objects]) {
+      clearAnchor(artwork);
+    }
+
+    store.clearAll();
+    previewArtwork?.root.removeFromParent();
+    previewArtwork = null;
+    previewHitLastUpdateAt = 0;
+    previewPlacementHit = null;
+    sessionStartedAt = performance.now();
+    setMode("drawing");
+
+    if (inSession && startImageElement) {
+      ensurePreviewArtwork();
+    }
+  };
+
+  const queueResetToFreshStart = () => {
+    pendingResetToFreshStart = true;
+  };
+
+  const queueExitFromAr = () => {
+    pendingExitSessionEnd = true;
+  };
+
+  const updateResetConfirmPanel = (camera: THREE.PerspectiveCamera) => {
+    if (!resetConfirmOpen) {
       return;
     }
 
-    store.select(null, mode === "editing");
+    const cameraPosition = new THREE.Vector3();
+    const cameraForward = new THREE.Vector3();
+    camera.getWorldPosition(cameraPosition);
+    camera.getWorldDirection(cameraForward);
+    resetConfirmPanel.root.position.copy(cameraPosition).add(cameraForward.multiplyScalar(0.72));
+    resetConfirmPanel.root.position.y += 0.045;
+    resetConfirmPanel.root.up.set(0, 1, 0);
+    resetConfirmPanel.root.lookAt(cameraPosition);
+  };
+
+  const updateExitConfirmPanel = (camera: THREE.PerspectiveCamera) => {
+    if (!exitConfirmOpen) {
+      return;
+    }
+
+    const cameraPosition = new THREE.Vector3();
+    const cameraForward = new THREE.Vector3();
+    camera.getWorldPosition(cameraPosition);
+    camera.getWorldDirection(cameraForward);
+    exitConfirmPanel.root.position.copy(cameraPosition).add(cameraForward.multiplyScalar(0.72));
+    exitConfirmPanel.root.position.y += 0.045;
+    exitConfirmPanel.root.up.set(0, 1, 0);
+    exitConfirmPanel.root.lookAt(cameraPosition);
+  };
+
+  const setResetConfirmHovered = (choice: ResetConfirmChoice | null) => {
+    resetConfirmPanel.yesButton.scale.setScalar(choice === "yes" ? 1.08 : 1);
+    resetConfirmPanel.noButton.scale.setScalar(choice === "no" ? 1.08 : 1);
+  };
+
+  const getResetConfirmChoice = (ray: THREE.Ray): ResetConfirmChoice | null => {
+    resetConfirmRaycaster.ray.copy(ray);
+    const hits = resetConfirmRaycaster.intersectObjects(
+      [resetConfirmPanel.yesHitArea, resetConfirmPanel.noHitArea],
+      false
+    );
+    for (const hit of hits) {
+      const choice = hit.object.userData.confirmChoice as ResetConfirmChoice | undefined;
+      if (choice) {
+        return choice;
+      }
+    }
+    return null;
+  };
+
+  const setExitConfirmHovered = (choice: ResetConfirmChoice | null) => {
+    exitConfirmPanel.yesButton.scale.setScalar(choice === "yes" ? 1.08 : 1);
+    exitConfirmPanel.noButton.scale.setScalar(choice === "no" ? 1.08 : 1);
+  };
+
+  const getExitConfirmChoice = (ray: THREE.Ray): ResetConfirmChoice | null => {
+    exitConfirmRaycaster.ray.copy(ray);
+    const hits = exitConfirmRaycaster.intersectObjects(
+      [exitConfirmPanel.yesHitArea, exitConfirmPanel.noHitArea],
+      false
+    );
+    for (const hit of hits) {
+      const choice = hit.object.userData.confirmChoice as ResetConfirmChoice | undefined;
+      if (choice) {
+        return choice;
+      }
+    }
+    return null;
+  };
+
+  const beginDepthDrag = (controller: ControllerState, artwork: ArtworkObject) => {
+    if (activeDrag || artwork.locked) {
+      return;
+    }
+
+    const gripPosition = new THREE.Vector3().setFromMatrixPosition(getMotionObject(controller).matrixWorld);
+    activeDrag = {
+      mode: "depth",
+      artwork,
+      controller,
+      plane: new THREE.Plane(),
+      rotationAxisLocal: null,
+      rotationAxisWorld: null,
+      lastControllerWorldPosition: gripPosition.clone(),
+      startWorldPoint: new THREE.Vector3(),
+      startHitLocal: new THREE.Vector3(),
+      startVector: new THREE.Vector3(),
+      startContentQuaternion: artwork.content.quaternion.clone(),
+      startGripPosition: gripPosition,
+      startPosition: artwork.position.clone(),
+      startWidth: artwork.width,
+      startHeight: artwork.height,
+      startOpacity: artwork.getDisplayOpacity(),
+      signX: 0,
+      signY: 0
+    };
+  };
+
+  const beginOpacityDrag = (controller: ControllerState, artwork: ArtworkObject) => {
+    if (activeDrag || artwork.locked) {
+      return;
+    }
+
+    const gripPosition = new THREE.Vector3().setFromMatrixPosition(getMotionObject(controller).matrixWorld);
+    activeDrag = {
+      mode: "opacity",
+      artwork,
+      controller,
+      plane: new THREE.Plane(),
+      rotationAxisLocal: null,
+      rotationAxisWorld: null,
+      lastControllerWorldPosition: gripPosition.clone(),
+      startWorldPoint: new THREE.Vector3(),
+      startHitLocal: new THREE.Vector3(),
+      startVector: new THREE.Vector3(),
+      startContentQuaternion: artwork.content.quaternion.clone(),
+      startGripPosition: gripPosition,
+      startPosition: artwork.position.clone(),
+      startWidth: artwork.width,
+      startHeight: artwork.height,
+      startOpacity: artwork.getDisplayOpacity(),
+      signX: 0,
+      signY: 0
+    };
   };
 
   const beginDrag = (
@@ -810,6 +1020,7 @@ async function bootstrap(): Promise<void> {
         startPosition: artwork.position.clone(),
         startWidth: artwork.width,
         startHeight: artwork.height,
+        startOpacity: artwork.getDisplayOpacity(),
         signX,
         signY
       };
@@ -837,6 +1048,7 @@ async function bootstrap(): Promise<void> {
       startPosition: artwork.position.clone(),
       startWidth: artwork.width,
       startHeight: artwork.height,
+      startOpacity: artwork.getDisplayOpacity(),
       signX,
       signY
     };
@@ -860,6 +1072,20 @@ async function bootstrap(): Promise<void> {
       const distance = delta.dot(artwork.normal);
       artwork.position.copy(activeDrag.startPosition).add(artwork.normal.clone().multiplyScalar(distance));
       markAnchorDirty(artwork);
+      return;
+    }
+
+    if (activeDrag.mode === "opacity") {
+      const current = new THREE.Vector3().setFromMatrixPosition(motionObject.matrixWorld);
+      const delta = current.sub(activeDrag.startGripPosition);
+      const cameraQuaternion = appScene.camera.getWorldQuaternion(new THREE.Quaternion());
+      const cameraRight = new THREE.Vector3(1, 0, 0).applyQuaternion(cameraQuaternion).normalize();
+      const cameraUp = new THREE.Vector3(0, 1, 0).applyQuaternion(cameraQuaternion).normalize();
+      const horizontal = delta.dot(cameraRight);
+      const vertical = delta.dot(cameraUp);
+      const deltaOpacity = horizontal + vertical;
+      const nextOpacity = THREE.MathUtils.clamp(activeDrag.startOpacity + deltaOpacity * 7.5, 0.05, 1);
+      artwork.setDisplayOpacity(nextOpacity);
       return;
     }
 
@@ -917,30 +1143,6 @@ async function bootstrap(): Promise<void> {
       default:
         break;
     }
-  };
-
-  const updateSurfaceSnapDrag = (frame: XRFrame, snapController: ControllerState) => {
-    if (!activeDrag || activeDrag.mode !== "move") {
-      return;
-    }
-
-    const artwork = activeDrag.artwork;
-    const ray = buildControllerRay(getPointerObject(snapController));
-    const nextHit = hitTest.update(frame);
-    const hit =
-      nextHit && nextHit.distance >= APP_CONFIG.interaction.minValidHitDistance
-        ? nextHit
-        : hitTest.getStableHit(APP_CONFIG.interaction.stableHitMaxAgeMs);
-
-    if (!hit || hit.distance < APP_CONFIG.interaction.minValidHitDistance) {
-      return;
-    }
-
-    const twist = extractTwistAroundAxis(artwork.contentQuaternion, new THREE.Vector3(0, 0, 1));
-    artwork.position.copy(hit.position);
-    artwork.root.quaternion.copy(makePreviewQuaternion(hit.normal, ray.direction));
-    artwork.setContentQuaternion(twist);
-    markAnchorDirty(artwork);
   };
 
   const isTrackingReliable = (frame: XRFrame): boolean => {
@@ -1007,7 +1209,6 @@ async function bootstrap(): Promise<void> {
         overlay.setState({
           hasStartImage: true,
           startImagePreviewUrl: dataUrl,
-          returnToArReady: false,
           imageEditorOpen: false,
           imageEditorPreviewUrl: "",
           outlineThreshold: startOutlineThreshold,
@@ -1051,7 +1252,6 @@ async function bootstrap(): Promise<void> {
     }
 
     await store.applyTextureFromFile(store.selected, file);
-    overlay.setState({ returnToArReady: true });
     updateVisualState();
   });
 
@@ -1087,15 +1287,7 @@ async function bootstrap(): Promise<void> {
   });
 
   overlay.onReset(() => {
-    endDrag();
-    while (store.objects.length > 0) {
-      clearAnchor(store.objects[0]);
-      store.select(store.objects[0], false);
-      store.removeSelected();
-    }
-    store.select(null, false);
-    setMode("drawing");
-    updateVisualState();
+    resetToInitialArState();
   });
 
   overlay.onEnterAr(async () => {
@@ -1114,7 +1306,6 @@ async function bootstrap(): Promise<void> {
     prompt: APP_CONFIG.ui.holdPrompt,
     hasStartImage: false,
     startImagePreviewUrl: "",
-    returnToArReady: false,
     imageEditorOpen: false,
     imageEditorPreviewUrl: "",
     outlineThreshold: startOutlineThreshold,
@@ -1134,7 +1325,6 @@ async function bootstrap(): Promise<void> {
     previewPlacementHit = null;
     clock.start();
     setMode("drawing");
-    overlay.setState({ returnToArReady: false });
     if (startImageElement && store.objects.length === 0) {
       ensurePreviewArtwork();
     }
@@ -1146,8 +1336,8 @@ async function bootstrap(): Promise<void> {
       xrReferenceSpace.removeEventListener("reset", xrReferenceSpaceResetHandler as EventListener);
     }
     xrReferenceSpaceResetHandler = null;
-    cancelExitHold();
-    cancelCreationHold();
+    closeResetConfirm();
+    closeExitConfirm();
     previewArtwork?.root.removeFromParent();
     previewArtwork = null;
     xrSessionHandle = null;
@@ -1161,7 +1351,6 @@ async function bootstrap(): Promise<void> {
     previewHitLastUpdateAt = 0;
     previewPlacementHit = null;
     endDrag();
-    reticle.hide();
     updateVisualState();
   });
 
@@ -1169,17 +1358,26 @@ async function bootstrap(): Promise<void> {
     const deltaSeconds = clock.getDelta();
     controllers.update();
 
+    if (pendingResetToFreshStart) {
+      pendingResetToFreshStart = false;
+      resetToInitialArState();
+      updateVisualState();
+      appScene.renderer.render(appScene.scene, appScene.camera);
+      return;
+    }
+
+    if (pendingExitSessionEnd) {
+      pendingExitSessionEnd = false;
+      closeExitConfirm();
+      void xrSession.end();
+      updateVisualState();
+      appScene.renderer.render(appScene.scene, appScene.camera);
+      return;
+    }
+
     const controller = controllers.getPreferred();
-    const snapController =
-      mode === "editing" &&
-      activeDrag?.controller &&
-      activeDrag.mode === "move" &&
-      activeDrag.controller.gripButton.pressed
-        ? activeDrag.controller
-        : null;
-    const hitTestController = snapController ?? controller;
     void hitTest.setTargetRaySpace(
-      hitTestController?.inputSource?.targetRaySpace ?? hitTestController?.inputSource?.gripSpace ?? null
+      controller?.inputSource?.targetRaySpace ?? controller?.inputSource?.gripSpace ?? null
     );
 
     if (controller) {
@@ -1189,16 +1387,46 @@ async function bootstrap(): Promise<void> {
     if (frame) {
       applyAnchors(frame);
     }
-    reticle.hide();
 
-    if (controller?.buttonA.justPressed) {
+    if (controller?.buttonA.justPressed && !resetConfirmOpen && !exitConfirmOpen) {
       endDrag();
       setMode(mode === "drawing" ? "editing" : "drawing");
     }
 
+    if (resetConfirmOpen || exitConfirmOpen) {
+      updateResetConfirmPanel(appScene.camera);
+      updateExitConfirmPanel(appScene.camera);
+      if (controller) {
+        const confirmRay = buildControllerRay(getPointerObject(controller));
+        const resetChoice = resetConfirmOpen ? getResetConfirmChoice(confirmRay) : null;
+        const exitChoice = exitConfirmOpen ? getExitConfirmChoice(confirmRay) : null;
+        setResetConfirmHovered(resetChoice);
+        setExitConfirmHovered(exitChoice);
+        if (controller.trigger.justPressed && (resetChoice || exitChoice)) {
+          suppressSelectionClearOnRelease = true;
+          if (resetChoice === "yes") {
+            queueResetToFreshStart();
+          } else if (exitChoice === "yes") {
+            queueExitFromAr();
+          } else {
+            if (resetChoice) {
+              closeResetConfirm();
+            }
+            if (exitChoice) {
+              closeExitConfirm();
+            }
+          }
+        }
+      } else {
+        setResetConfirmHovered(null);
+        setExitConfirmHovered(null);
+      }
+      updateVisualState();
+      appScene.renderer.render(appScene.scene, appScene.camera);
+      return;
+    }
+
     if (!controller) {
-      cancelExitHold();
-      cancelCreationHold();
       store.setHoveredHandle(null);
       updateVisualState();
       appScene.renderer.render(appScene.scene, appScene.camera);
@@ -1213,28 +1441,6 @@ async function bootstrap(): Promise<void> {
         ? Math.max(0.02, editingIntersection.point.distanceTo(pointerRay.origin))
         : 1.4
     );
-
-    if (controller.buttonB.pressed) {
-      if (!exitHoldStartedAt) {
-        exitHoldStartedAt = performance.now();
-        updateVisualState();
-      }
-      const exitProgress =
-        (performance.now() - exitHoldStartedAt) / APP_CONFIG.exit.holdDurationMs;
-      updateExitHoldVisual(controller, exitProgress);
-      if (exitProgress >= 1) {
-        cancelExitHold();
-        void xrSession.end();
-      }
-    } else {
-      if (exitHoldStartedAt) {
-        cancelExitHold();
-        updateVisualState();
-      }
-    }
-
-    // Drawing-mode long-hold creation is intentionally disabled for now.
-    // We may restore it later if we need both flows.
 
     if (previewArtwork && mode === "drawing") {
       const now = performance.now();
@@ -1273,65 +1479,75 @@ async function bootstrap(): Promise<void> {
         if (intersection) {
           const wasSelected = store.selected === intersection.object;
           store.select(intersection.object, true);
-          const dragInfo = handleToDragMode(intersection.handle);
-          if (wasSelected && dragInfo && !intersection.object.locked) {
-            beginDrag(
-              controller,
-              intersection.object,
-              dragInfo.mode,
-              dragInfo.signX,
-              dragInfo.signY,
-              dragInfo.axisLocal
-            );
+          if (wasSelected && intersection.handle === PANEL_RESET_BUTTON_NAME && !intersection.object.locked) {
+            openResetConfirm();
+          } else if (wasSelected && intersection.handle === PANEL_BUTTON_NAME && !intersection.object.locked) {
+            beginDepthDrag(controller, intersection.object);
+          } else if (wasSelected && intersection.handle === PANEL_TRANSPARENCY_BUTTON_NAME && !intersection.object.locked) {
+            beginOpacityDrag(controller, intersection.object);
+          } else if (wasSelected && intersection.handle === PANEL_EXIT_BUTTON_NAME && !intersection.object.locked) {
+            openExitConfirm();
+          } else {
+            const dragInfo = handleToDragMode(intersection.handle as HandleName);
+            if (wasSelected && dragInfo && !intersection.object.locked) {
+              beginDrag(
+                controller,
+                intersection.object,
+                dragInfo.mode,
+                dragInfo.signX,
+                dragInfo.signY,
+                dragInfo.axisLocal
+              );
+            }
           }
         }
       }
 
-      if (controller.gripButton.justPressed && store.selected && !store.selected.locked && !activeDrag) {
-        activeDrag = {
-          mode: "depth",
-          artwork: store.selected,
-          controller,
-          plane: new THREE.Plane(),
-          rotationAxisLocal: null,
-          rotationAxisWorld: null,
-          lastControllerWorldPosition: new THREE.Vector3().setFromMatrixPosition(getMotionObject(controller).matrixWorld),
-          startWorldPoint: new THREE.Vector3(),
-          startHitLocal: new THREE.Vector3(),
-          startVector: new THREE.Vector3(),
-          startContentQuaternion: store.selected.content.quaternion.clone(),
-          startGripPosition: new THREE.Vector3().setFromMatrixPosition(getMotionObject(controller).matrixWorld),
-          startPosition: store.selected.position.clone(),
-          startWidth: store.selected.width,
-          startHeight: store.selected.height,
-          signX: 0,
-          signY: 0
-        };
+      if (
+        controller.trigger.pressed &&
+        editingIntersection?.handle === PANEL_BUTTON_NAME &&
+        store.selected === editingIntersection.object &&
+        !store.selected.locked &&
+        !activeDrag
+      ) {
+        beginDepthDrag(controller, store.selected);
       }
 
-      if (controller.gripButton.justReleased && activeDrag?.mode === "depth") {
-        endDrag();
+      if (
+        controller.trigger.pressed &&
+        editingIntersection?.handle === PANEL_TRANSPARENCY_BUTTON_NAME &&
+        store.selected === editingIntersection.object &&
+        !store.selected.locked &&
+        !activeDrag
+      ) {
+        beginOpacityDrag(controller, store.selected);
       }
 
       if (controller.trigger.justReleased) {
+        if (suppressSelectionClearOnRelease) {
+          suppressSelectionClearOnRelease = false;
+          return;
+        }
+        if (
+          activeDrag &&
+          activeDrag.controller === controller &&
+          (activeDrag.mode === "depth" || activeDrag.mode === "opacity")
+        ) {
+          endDrag();
+          return;
+        }
         if (activeDrag && activeDrag.controller === controller && activeDrag.mode !== "depth") {
           endDrag();
         } else {
           const intersection = editingIntersection;
-          if (!intersection) {
-            clearSelectionIfAllowed();
-          } else if (!intersection.object.locked) {
+          if (intersection && !intersection.object.locked) {
             store.select(intersection.object, true);
           }
         }
       }
 
       if (activeDrag?.controller === controller) {
-        if (frame && snapController && isTrackingReliable(frame)) {
-          updateSurfaceSnapDrag(frame, snapController);
-        } else {
-          updateDrag();
-        }
+        updateDrag();
       } else if (store.selected && !store.selected.locked) {
         const [xAxis, yAxis] = controller.axes;
         if (Math.abs(xAxis) > JOYSTICK_DEAD_ZONE) {

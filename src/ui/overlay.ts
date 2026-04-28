@@ -15,7 +15,6 @@ export interface OverlayState {
   prompt: string;
   hasStartImage: boolean;
   startImagePreviewUrl: string;
-  returnToArReady: boolean;
   imageEditorOpen: boolean;
   imageEditorPreviewUrl: string;
   outlineThreshold: number;
@@ -36,7 +35,6 @@ export interface OverlayController {
   onDelete: (callback: () => void) => void;
   onReplaceSelectedFile: (callback: (file: File) => void) => void;
   onPresetSelected: (callback: (presetId: string) => void) => void;
-  openReplacePicker: () => void;
   setState: (patch: Partial<OverlayState>) => void;
 }
 
@@ -177,7 +175,6 @@ export function createOverlay(library: LibraryItem[]): OverlayController {
     prompt: "",
     hasStartImage: false,
     startImagePreviewUrl: "",
-    returnToArReady: false,
     imageEditorOpen: false,
     imageEditorPreviewUrl: "",
     outlineThreshold: 72,
@@ -290,11 +287,6 @@ export function createOverlay(library: LibraryItem[]): OverlayController {
             callback(presetId);
           }
         });
-      }
-    },
-    openReplacePicker() {
-      if (!replaceFileInput.disabled) {
-        replaceFileInput.click();
       }
     },
     setState(patch) {
